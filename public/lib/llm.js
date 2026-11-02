@@ -112,6 +112,10 @@ export function createLlmClient(cfg, {
         'x-api-key': cfg.apiKey,
         'anthropic-version': '2023-06-01',
       };
+      // 浏览器直连 Anthropic 时必须显式声明，否则预检就被拒。
+      if (typeof window !== 'undefined') {
+        headers['anthropic-dangerous-direct-browser-access'] = 'true';
+      }
       body = {
         model: cfg.model,
         max_tokens: maxTokens,
@@ -137,6 +141,13 @@ export function createLlmClient(cfg, {
       if (useJsonFormat) body.response_format = { type: 'json_object' };
     }
 
+    // 自建网关/代理可能要求额外请求头。
+    if (cfg.headers && typeof cfg.headers === 'object') {
+      for (const [name, value] of Object.entries(cfg.headers)) {
+        if (name && value != null) headers[name] = String(value);
+      }
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
@@ -158,6 +169,14 @@ export function createLlmClient(cfg, {
     const raw = await response.text();
 
     if (!response.ok) {
+      // 新一些的推理模型不再接受 max_tokens，要改用 max_completion_tokens。
+      // 换个字段名重试一次，省得用户为了这个去改代码。
+      if (response.status === 400 && protocol !== 'anthropic'
+        && raw.includes('max_tokens') && !raw.includes('max_completion_tokens')) {
+        body.max_completion_tokens = body.max_tokens;
+        delete body.max_tokens;
+        return rawCall({ system, user, temperature, maxTokens, useJsonFormat: false });
+      }
       throw new LlmError(`上游返回 HTTP ${response.status}`, {
         status: response.status,
         retryable: response.status === 429 || response.status >= 500,
@@ -210,10 +229,25 @@ export function createLlmClient(cfg, {
         try {
           return extractJson(content);
         } catch {
-          throw new LlmError('模型输出不是可解析的 JSON。', {
-            retryable: true,
-            snippet: redact(content, cfg.apiKey).slice(0, 600),
+          // 模型没给出可解析的 JSON（常见于较小的模型）。
+          // 明确要求一次"只输出 JSON"，比原样重试有用得多。
+          const retry = await rawCall({
+            system: `${system}\n\n`
+              + '【再次输出】你上一次的输出无法被解析为 JSON。'
+              + '请只输出一个 JSON 对象，不要任何解释文字、不要 markdown 代码块。',
+            user,
+            temperature: 0,
+            maxTokens,
+            useJsonFormat: false,
           });
+          try {
+            return extractJson(retry.content);
+          } catch {
+            throw new LlmError('模型输出不是可解析的 JSON。', {
+              retryable: true,
+              snippet: redact(content, cfg.apiKey).slice(0, 600),
+            });
+          }
         }
       } catch (err) {
         lastError = err;

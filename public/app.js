@@ -23,12 +23,74 @@ const CFG_STORE = 'mbti-open-api-cfg';
 /* ---------- 运行模式 ---------- */
 
 const DEFAULT_API_CFG = {
+  providerId: 'minimax',
   baseURL: 'https://api.minimaxi.com/v1',
   model: 'MiniMax-M2.7',
   protocol: 'openai',
 };
 
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '0.0.0.0', '::1', '[::1]']);
+
+/* ---------- 厂商预设 ---------- */
+
+/**
+ * `cors` 是实测结论（预检是否返回允许本页面的 Access-Control-Allow-Origin）：
+ *   'ok'      —— 实测通过，浏览器可直连；
+ *   'blocked' —— 实测被拒（没有 ACAO 头，或 403）；
+ *   'unknown' —— 本机网络到不了该厂商，未能实测。
+ *
+ * 静态部署只能直连 cors==='ok' 的服务：浏览器发起的跨域请求由对方放行与否决定，
+ * 客户端绕不过去。其余厂商请用**本机版**（npm start）——服务端发请求，不受跨域限制。
+ */
+export const PROVIDER_PRESETS = [
+  {
+    id: 'minimax', label: 'MiniMax（本站默认）', cors: 'ok',
+    baseURL: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2.7', protocol: 'openai',
+  },
+  {
+    id: 'deepseek', label: 'DeepSeek', cors: 'ok',
+    baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-chat', protocol: 'openai',
+  },
+  {
+    id: 'qwen', label: '阿里云百炼 · 通义千问', cors: 'ok',
+    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus', protocol: 'openai',
+  },
+  {
+    id: 'kimi', label: '月之暗面 · Kimi', cors: 'ok',
+    baseURL: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k', protocol: 'openai',
+  },
+  {
+    id: 'doubao', label: '火山方舟 · 豆包', cors: 'ok',
+    baseURL: 'https://ark.cn-beijing.volces.com/api/v3', model: '',
+    modelHint: '填你的接入点 ID（ep-…）', protocol: 'openai',
+  },
+  {
+    id: 'siliconflow', label: '硅基流动 SiliconFlow', cors: 'ok',
+    baseURL: 'https://api.siliconflow.cn/v1', model: '',
+    modelHint: '如 Qwen/Qwen2.5-7B-Instruct', protocol: 'openai',
+  },
+  {
+    id: 'openrouter', label: 'OpenRouter（可调多家模型）', cors: 'ok',
+    baseURL: 'https://openrouter.ai/api/v1', model: '',
+    modelHint: '如 openai/gpt-4o-mini', protocol: 'openai',
+  },
+  {
+    id: 'qianfan', label: '百度千帆', cors: 'ok',
+    baseURL: 'https://qianfan.baidubce.com/v2', model: '',
+    modelHint: '如 ernie-4.0-8k', protocol: 'openai',
+  },
+  {
+    id: 'custom', label: '自定义 OpenAI 兼容端点', cors: 'unknown',
+    baseURL: '', model: '', modelHint: '填你的 /v1 根地址', protocol: 'openai',
+  },
+];
+
+/** 预设的跨域标记 → 给人看的一句话。 */
+export function corsBadge(cors) {
+  if (cors === 'ok') return { text: '可直连', tone: 'ok' };
+  if (cors === 'blocked') return { text: '浏览器直连被拒', tone: 'bad' };
+  return { text: '未实测', tone: 'unknown' };
+}
 
 const HAS_BROWSER = typeof location !== 'undefined';
 const FORCE_MODE = HAS_BROWSER ? new URLSearchParams(location.search).get('mode') : null;
@@ -52,6 +114,25 @@ function loadApiCfg() {
   return { ...DEFAULT_API_CFG, ...extra };
 }
 
+function saveApiCfg(patch) {
+  const next = { ...loadApiCfg(), ...patch };
+  try {
+    localStorage.setItem(CFG_STORE, JSON.stringify(next));
+  } catch (err) {
+    console.warn('接口配置保存失败', err);
+  }
+  return next;
+}
+
+/** 取端点的主机名，用于在界面上说明"数据发去了哪里"。 */
+export function hostOf(baseURL) {
+  try {
+    return new URL(String(baseURL || '')).host;
+  } catch {
+    return '';
+  }
+}
+
 function loadApiKey() {
   try {
     return localStorage.getItem(KEY_STORE) || '';
@@ -73,10 +154,73 @@ function saveApiKey(value) {
 function directClient() {
   const key = loadApiKey();
   if (!key) {
-    throw new Error('还没有填写 API Key。静态部署版需要你自己的 MiniMax API Key。');
+    throw new Error('还没有填写 API Key。静态部署版需要你自己的 API Key。');
   }
   const cfg = { ...loadApiCfg(), apiKey: key, keyConfigured: true };
   return createLlmClient(cfg);
+}
+
+/* ---------- 接口设置面板的状态与动作 ---------- */
+
+const apiPanelState = { message: null, busy: false };
+
+/** 读取面板上的几个字段。 */
+function readApiPanel() {
+  const q = (selector) => dom.view.querySelector(selector);
+  return {
+    providerId: String(q('#api-provider')?.value || 'custom'),
+    baseURL: String(q('#api-baseurl')?.value || '').trim(),
+    model: String(q('#api-model')?.value || '').trim(),
+    protocol: String(q('#api-protocol')?.value || 'openai'),
+    key: String(q('#api-key-input')?.value || '').trim(),
+  };
+}
+
+/**
+ * 连通性测试：发一个极小的请求。
+ * 报错要说人话——尤其要把"跨域被拦"和"密钥错了"分开，
+ * 因为前者改配置没有用，得换服务或改用本机版。
+ */
+export async function testConnection(values) {
+  try {
+    const client = createLlmClient({
+      baseURL: values.baseURL,
+      model: values.model,
+      protocol: values.protocol,
+      apiKey: values.key,
+      keyConfigured: true,
+    });
+    const { content } = await client.rawCall({
+      system: '按要求原样回复，不要多说。',
+      user: '回复：收到',
+      temperature: 0,
+      maxTokens: 8,
+    });
+    const said = String(content || '').trim().slice(0, 40);
+    return {
+      tone: 'ok',
+      text: `连接成功：${values.model || '(未填模型名)'} 已响应${said ? `（回复：${said}）` : ''}。`,
+    };
+  } catch (err) {
+    const status = err?.status || 0;
+    if (status === 401 || status === 403) {
+      return { tone: 'bad', text: `密钥被拒（HTTP ${status}）：检查 API Key 是否正确、是否属于这个端点。` };
+    }
+    if (status === 404) {
+      return { tone: 'bad', text: '端点或模型名不对（HTTP 404）：接口地址要填到 /v1 为止，模型名要用该服务商真实存在的。' };
+    }
+    if (status === 400) {
+      return { tone: 'bad', text: '请求被拒（HTTP 400）：多半是模型名不被接受，或该服务对参数有额外要求。' };
+    }
+    if (status === 429) {
+      return { tone: 'bad', text: '被限流了（HTTP 429）：稍后再试，或换个时段。' };
+    }
+    return {
+      tone: 'bad',
+      text: '浏览器连不上这个端点。多半是对方不允许网页直连（跨域被拦）——'
+        + '改用列表里标「可直连」的服务，或改用本机版（npm start）：那时请求由本机服务端发出，不受跨域限制。',
+    };
+  }
 }
 
 
@@ -289,11 +433,14 @@ async function requestScore(dimension, answers, skipped = []) {
 /** 合成最终画像。同样两种路径。 */
 async function requestFinalize(dimensionResults) {
   if (IS_DIRECT) {
-    return finalizeReport({
+    const cfg = loadApiCfg();
+    const result = await finalizeReport({
       dimensionResults,
       client: directClient(),
       onNote: (message) => console.info('[mbti-open]', message),
     });
+    result.meta = { model: cfg.model, endpointHost: hostOf(cfg.baseURL), protocol: cfg.protocol };
+    return result;
   }
   return postJSON('api/finalize', { dimensionResults });
 }
@@ -346,40 +493,89 @@ export function buildErrorBanner({ errors = {} } = {}) {
 }
 
 /**
- * 静态部署版的密钥面板。
+ * 静态部署版的接口设置面板。
  * 只有 direct 模式（纯静态托管）才需要——那时没有后端替访客保管密钥。
  */
-export function buildKeyPanel({ hasKey = false, endpoint = '', model = '' } = {}) {
+export function buildApiSettingsPanel({
+  cfg = {}, providerId = '', hasKey = false, message = '', busy = false,
+} = {}) {
+  const options = PROVIDER_PRESETS.map((preset) => {
+    const badge = corsBadge(preset.cors);
+    const selected = preset.id === providerId ? ' selected' : '';
+    return `<option value="${esc(preset.id)}"${selected}>${esc(preset.label)} · ${esc(badge.text)}</option>`;
+  }).join('');
+
+  const active = PROVIDER_PRESETS.find((p) => p.id === providerId);
+  const hint = active && active.modelHint ? active.modelHint : '模型名';
+
+  const messageHTML = message
+    ? `<p class="small api-msg api-msg--${esc(message.tone || 'info')}">${esc(message.text)}</p>`
+    : '';
+
   return `
     <div class="key-panel">
-      <h2 class="key-panel__title">这个页面需要你自己的 API Key</h2>
+      <h2 class="key-panel__title">接哪家的模型？</h2>
       <p class="small">
-        静态部署没有后端，判型请求由<b>你的浏览器</b>直接发往 <code>${esc(endpoint)}</code>（模型 ${esc(model)}）。
-        Key 只保存在这台设备上（浏览器 localStorage）——页面、代码仓库和 GitHub 上都没有密钥，
-        仓库里也不存在任何凭据。
+        静态部署没有后端，判型请求由<b>你的浏览器</b>直接发往你选的厂商。
+        Key 只保存在这台设备上（浏览器 localStorage）——页面、代码仓库和 GitHub 上都没有密钥。
       </p>
-      <div class="key-panel__row">
-        <input type="password" id="api-key-input" class="key-input" autocomplete="off" spellcheck="false"
-               placeholder="${esc(hasKey ? '已保存一个 Key，可在此处更换' : '粘贴你的 MiniMax API Key（sk-…）')}">
-        <button type="button" class="btn btn--primary" id="api-key-save">${hasKey ? '更换' : '保存'}</button>
-        ${hasKey ? '<button type="button" class="btn btn--ghost" id="api-key-clear">清除</button>' : ''}
+
+      <div class="api-grid">
+        <label class="api-field">
+          <span class="api-field__label">服务商</span>
+          <select id="api-provider" class="key-input">${options}</select>
+        </label>
+
+        <label class="api-field">
+          <span class="api-field__label">协议</span>
+          <select id="api-protocol" class="key-input">
+            <option value="openai"${cfg.protocol === 'anthropic' ? '' : ' selected'}>OpenAI 兼容</option>
+            <option value="anthropic"${cfg.protocol === 'anthropic' ? ' selected' : ''}>Anthropic</option>
+          </select>
+        </label>
+
+        <label class="api-field api-field--wide">
+          <span class="api-field__label">接口地址（到 /v1 为止）</span>
+          <input type="text" id="api-baseurl" class="key-input" spellcheck="false" autocomplete="off"
+                 placeholder="https://api.example.com/v1" value="${esc(cfg.baseURL || '')}">
+        </label>
+
+        <label class="api-field api-field--wide">
+          <span class="api-field__label">模型名</span>
+          <input type="text" id="api-model" class="key-input" spellcheck="false" autocomplete="off"
+                 placeholder="${esc(hint)}" value="${esc(cfg.model || '')}">
+        </label>
+
+        <label class="api-field api-field--wide">
+          <span class="api-field__label">API Key</span>
+          <input type="password" id="api-key-input" class="key-input" autocomplete="off" spellcheck="false"
+                 placeholder="${esc(hasKey ? '已保存一个 Key，可在此处更换' : '粘贴你的 API Key（sk-…）')}">
+        </label>
       </div>
-      <p class="small" id="api-key-hint">${hasKey
-        ? '已保存一个 Key，可以直接开始作答。'
-        : '尚未填写。填好之后才能开始作答。'}</p>
+
+      <div class="btn-row" style="margin-top:14px">
+        <button type="button" class="btn btn--primary" id="api-save">保存</button>
+        <button type="button" class="btn" id="api-test"${busy ? ' disabled' : ''}>${busy ? '正在测试…' : '测试连接'}</button>
+        <button type="button" class="btn btn--ghost" id="api-key-clear">清除 Key</button>
+      </div>
+
+      ${messageHTML}
+
       <p class="small">
-        没有 Key？可以在 minimaxi.com 申请；也可以把仓库克隆到本机执行 <code>npm start</code>，
-        用本机服务端运行——那时密钥由服务端从本机配置读取，不用手填。
+        选 <b>自定义 OpenAI 兼容端点</b> 就能接任何 OpenAI 协议的服务——但浏览器能否直连，
+        取决于对方有没有放行跨域。若「测试连接」报的是跨域被拦，说明这个服务不允许网页直连，
+        请改用<b>本机版</b>（<code>npm start</code>）：那时请求由本机服务端发出，不受跨域限制，任意厂商都可以。
       </p>
     </div>`;
 }
 
 export function buildStartView({
   bank: itemBank, health: itemHealth, resultCount = 0, keyPanel = '', direct = false,
-  mode = 'full', modeSelectable = true,
+  mode = 'full', modeSelectable = true, apiCfg = null,
 } = {}) {
   const healthLine = direct
-    ? `<span class="small">静态直连模式 · 浏览器直接调用 API · 密钥只存在你的浏览器里</span>`
+    ? `<span class="small">静态直连模式 · ${esc(apiCfg?.model || '未指定模型')} · `
+      + `${esc(hostOf(apiCfg?.baseURL) || '未指定端点')} · 密钥只存在你的浏览器里</span>`
     : itemHealth
       ? (itemHealth.keyConfigured
         ? `<span class="small">服务已就绪 · 模型 ${esc(itemHealth.model)} · 端点 ${esc(itemHealth.endpointHost)}</span>`
@@ -697,6 +893,13 @@ export function buildFinalView({
     </tr>`).join('');
 
   const bio = final.biography || {};
+  // 写明是谁判的型：换厂商/换模型，口径未必一样，得让人知道。
+  const meta = final.meta || {};
+  const metaLine = meta.model
+    ? `<p class="small">本次判型由 <b>${esc(meta.model)}</b>`
+      + `${meta.endpointHost ? `（${esc(meta.endpointHost)}）` : ''} 生成。`
+      + '不同模型的判型口径会有差异；用同一份作答换模型重跑，可以作对照。</p>'
+    : '';
   const bioHTML = bio.degraded
     ? `<h2>人物小传</h2>
        <p class="notice">${esc(bio.closing || '本次未生成叙述性小传。')}</p>
@@ -756,6 +959,7 @@ export function buildFinalView({
     <p class="kicker">倾向画像</p>
     <h1>${esc(bio.title || '你的画像')}</h1>
     <p class="small">整体置信度 ${(Number(final.typeConfidence || 0) * 100).toFixed(0)}%</p>
+    ${metaLine}
 
     ${typeHTML}
 
@@ -951,10 +1155,12 @@ function bindRetryButtons() {
 function renderStart() {
   const apiCfg = loadApiCfg();
   const keyPanel = IS_DIRECT
-    ? buildKeyPanel({
+    ? buildApiSettingsPanel({
+      cfg: apiCfg,
+      providerId: apiCfg.providerId || 'minimax',
       hasKey: Boolean(loadApiKey()),
-      endpoint: apiCfg.baseURL,
-      model: apiCfg.model,
+      message: apiPanelState.message,
+      busy: apiPanelState.busy,
     })
     : '';
   dom.view.innerHTML = buildStartView({
@@ -965,6 +1171,7 @@ function renderStart() {
     direct: IS_DIRECT,
     mode: state.mode,
     modeSelectable: state.results.length === 0 && !state.final,
+    apiCfg,
   });
 
   dom.view.querySelectorAll('[data-mode]').forEach((button) => {
@@ -982,22 +1189,63 @@ function renderStart() {
     });
   });
 
-  dom.view.querySelector('#api-key-save')?.addEventListener('click', () => {
-    const input = dom.view.querySelector('#api-key-input');
-    const value = String(input?.value || '').trim();
-    if (!value) {
-      state.error = '请先粘贴一个 API Key。';
+  dom.view.querySelector('#api-provider')?.addEventListener('change', (event) => {
+    const preset = PROVIDER_PRESETS.find((p) => p.id === event.target.value);
+    if (!preset) return;
+    apiPanelState.message = null;
+    saveApiCfg({
+      providerId: preset.id,
+      baseURL: preset.baseURL,
+      model: preset.model,
+      protocol: preset.protocol,
+    });
+    render();
+  });
+
+  dom.view.querySelector('#api-save')?.addEventListener('click', () => {
+    const values = readApiPanel();
+    if (!values.key) {
+      apiPanelState.message = { tone: 'bad', text: '请先粘贴一个 API Key。' };
       render();
       return;
     }
-    saveApiKey(value);
-    state.error = null;
+    saveApiCfg({
+      providerId: values.providerId,
+      baseURL: values.baseURL,
+      model: values.model,
+      protocol: values.protocol,
+    });
+    saveApiKey(values.key);
+    apiPanelState.message = { tone: 'ok', text: '已保存。可以点"测试连接"确认这个端点通不通。' };
+    render();
+  });
+
+  dom.view.querySelector('#api-test')?.addEventListener('click', async () => {
+    const values = readApiPanel();
+    if (!values.key) {
+      apiPanelState.message = { tone: 'bad', text: '先填 API Key 再测。' };
+      render();
+      return;
+    }
+    saveApiCfg({
+      providerId: values.providerId,
+      baseURL: values.baseURL,
+      model: values.model,
+      protocol: values.protocol,
+    });
+    saveApiKey(values.key);
+    apiPanelState.busy = true;
+    apiPanelState.message = null;
+    render();
+
+    apiPanelState.message = await testConnection(values);
+    apiPanelState.busy = false;
     render();
   });
 
   dom.view.querySelector('#api-key-clear')?.addEventListener('click', () => {
     saveApiKey('');
-    state.error = null;
+    apiPanelState.message = { tone: 'info', text: '已清除这台设备上保存的 Key。' };
     render();
   });
 

@@ -20,6 +20,8 @@ import {
   readoutOf,
   expectedTypeFrom,
   coverageLine,
+  PROVIDER_PRESETS,
+  buildApiSettingsPanel,
   state,
   esc,
 } from '../public/app.js';
@@ -507,6 +509,74 @@ test('buildFinalView 在报告里说明跳过的题', () => {
   });
   assert.match(html, /实际作答 4 题/);
   assert.match(html, /EI-06/);
+});
+
+/* ---------- 接口设置（多厂商） ---------- */
+
+test('PROVIDER_PRESETS 字段完整，且默认厂商与默认配置一致', () => {
+  assert.ok(PROVIDER_PRESETS.length >= 8, '预设数量不应太少');
+  const ids = new Set();
+  for (const preset of PROVIDER_PRESETS) {
+    assert.ok(preset.id, '缺少 id');
+    assert.ok(!ids.has(preset.id), `id 重复：${preset.id}`);
+    ids.add(preset.id);
+    assert.ok(preset.label, `${preset.id} 缺少名称`);
+    assert.ok(['ok', 'blocked', 'unknown'].includes(preset.cors), `${preset.id} 的 cors 标记非法`);
+    assert.ok(['openai', 'anthropic'].includes(preset.protocol), `${preset.id} 的协议非法`);
+    if (preset.id !== 'custom') {
+      assert.match(preset.baseURL, /^https:\/\//, `${preset.id} 的端点应为 https`);
+    }
+  }
+  const mini = PROVIDER_PRESETS.find((p) => p.id === 'minimax');
+  assert.equal(mini.baseURL, 'https://api.minimaxi.com/v1');
+  assert.equal(mini.cors, 'ok');
+
+  // 浏览器直连被 Anthropic 拒绝，不放进线上版的可选列表
+  assert.ok(!PROVIDER_PRESETS.some((p) => /anthropic|claude/i.test(p.id + p.label + p.baseURL)),
+    '线上版预设里不应再出现 Anthropic');
+});
+
+test('buildApiSettingsPanel 给出厂商、端点、模型、协议、Key 与操作按钮', () => {
+  const html = buildApiSettingsPanel({
+    cfg: { baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-chat', protocol: 'openai' },
+    providerId: 'deepseek',
+    hasKey: false,
+  });
+  assert.match(html, /id="api-provider"/);
+  assert.match(html, /id="api-baseurl"/);
+  assert.match(html, /id="api-model"/);
+  assert.match(html, /id="api-protocol"/);
+  assert.match(html, /id="api-key-input"/);
+  assert.match(html, /id="api-save"/);
+  assert.match(html, /id="api-test"/);
+  assert.match(html, /可直连/);
+  assert.match(html, /本机版/, '要提示不支持直连的服务改用本机版');
+  assert.match(html, /value="https:\/\/api\.deepseek\.com\/v1"/);
+});
+
+test('buildStartView 直连模式显示当前厂商与模型', () => {
+  const html = buildStartView({
+    bank: { dimensions: ITEM_BANK.dimensions, items: [] },
+    health: null,
+    resultCount: 0,
+    direct: true,
+    apiCfg: { model: 'deepseek-chat', baseURL: 'https://api.deepseek.com/v1' },
+  });
+  assert.match(html, /deepseek-chat/);
+  assert.match(html, /api\.deepseek\.com/);
+});
+
+test('buildFinalView 写明报告由哪个模型生成', () => {
+  const html = buildFinalView({
+    final: { ...FINAL_RESULT, meta: { model: 'qwen-plus', endpointHost: 'dashscope.aliyuncs.com' } },
+    itemBank: ITEM_BANK,
+    dimensionResults: [DIMENSION_RESULT],
+    error: null,
+    errorBanner: '',
+  });
+  assert.match(html, /qwen-plus/);
+  assert.match(html, /dashscope\.aliyuncs\.com/);
+  assert.match(html, /不同模型的判型口径会有差异/);
 });
 
 /* ---------- 报告与逐维结论是否同源 ---------- */

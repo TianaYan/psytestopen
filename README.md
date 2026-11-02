@@ -30,9 +30,9 @@ npm start
 仓库的 `public/` 目录就是站点根目录，由 GitHub Actions 发布。
 
 - 页面是**纯静态**的，没有后端。
-- 访客需要填**自己的** MiniMax API Key。Key 只存在访客的浏览器 localStorage 里，
+- 访客需要填**自己的** API Key，并选择要接哪家模型。Key 只存在访客的浏览器 localStorage 里，
   不经过任何服务器，**仓库和页面上都没有密钥**。
-- 判型请求由浏览器直接发往 `api.minimaxi.com`（该端点支持 CORS）。
+- 判型请求由浏览器直接发往该厂商（该端点需要支持浏览器跨域直连，见下表）。
 
 访问地址形如 `https://<你的用户名>.github.io/<仓库名>/`。
 
@@ -43,6 +43,48 @@ npm start
 ```
 http://127.0.0.1:5173/?mode=direct
 ```
+
+## 接哪家模型
+
+两种部署接谁都行，只是**限制不同**。
+
+### 本机版：任意厂商都行
+
+服务端直接发请求，**不受浏览器跨域限制**，所以 OpenAI、Claude、Gemini 这类不开放网页直连的服务也能用。
+在项目根目录建 `.env.local`：
+
+```bash
+MBTI_API_KEY=你的密钥
+MBTI_BASE_URL=https://api.openai.com/v1
+MBTI_MODEL=gpt-4o-mini
+MBTI_PROTOCOL=openai
+```
+
+`MBTI_PROTOCOL` 取 `openai`（`/chat/completions` + Bearer）或 `anthropic`（`/messages` + `x-api-key`）。
+变量优先级：进程环境变量 > `.env.local` > 本机 MiniMax 配置文件。
+
+### 静态部署：只能接开放网页直连的服务
+
+浏览器发起的跨域请求由对方放行与否决定，客户端绕不过去。开始页里可以直接选厂商、填端点与模型，
+并点「测试连接」验证——失败时会给区分原因（密钥错 / 端点或模型名不对 / **跨域被拦**）。
+
+以下是 2026-11-02 的实测结论（预检是否返回允许本站域名的 `Access-Control-Allow-Origin`）：
+
+| 服务商 | 浏览器直连 | 端点 |
+|---|---|---|
+| MiniMax | 可直连 | `https://api.minimaxi.com/v1` |
+| DeepSeek | 可直连 | `https://api.deepseek.com/v1` |
+| 阿里云百炼 · 通义千问 | 可直连 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 月之暗面 · Kimi | 可直连 | `https://api.moonshot.cn/v1` |
+| 火山方舟 · 豆包 | 可直连 | `https://ark.cn-beijing.volces.com/api/v3`（模型填接入点 ID `ep-…`） |
+| 硅基流动 SiliconFlow | 可直连 | `https://api.siliconflow.cn/v1` |
+| OpenRouter | 可直连 | `https://openrouter.ai/api/v1` |
+| 百度千帆 | 可直连 | `https://qianfan.baidubce.com/v2` |
+| 智谱 GLM | **被拒** | 预检 200 但不带跨域头 —— 静态版用不了，请走本机版 |
+| OpenAI / Gemini / Groq / Together / 讯飞星火 / Claude | **未实测** | 本机网络到不了这些域名，无法验证；按官方惯例它们通常不开放网页直连，请走本机版 |
+
+「自定义 OpenAI 兼容端点」可以填任何 OpenAI 协议的服务，但能否直连取决于对方。
+另外报告页会写明**本次判型由哪个模型生成**——换模型重跑同一份作答，可以对照口径差异。
 
 ## 交互流程
 

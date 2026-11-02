@@ -219,12 +219,20 @@ export function createServer({ config, llm, items } = {}) {
         }
         console.log(`[mbti-open] POST /api/finalize (${dimensionResults.length} 维)`);
 
-        const result = await enqueue('finalize', () =>
-          finalizeReport({
+        const result = await enqueue('finalize', async () => {
+          const validated = await finalizeReport({
             dimensionResults,
             client,
             onNote: (message) => console.log(`[mbti-open] ${message}`),
-          }));
+          });
+          // 报告里要写明是谁判的型：换了厂商/模型，口径未必一样。
+          validated.meta = {
+            model: cfg.model,
+            endpointHost: cfg.endpointHost,
+            protocol: cfg.protocol,
+          };
+          return validated;
+        });
 
         sendJson(res, 200, result);
         return;
