@@ -1,0 +1,14 @@
+{
+  "name": "mbti-open",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "开放题版 MBTI：把选择题换成受测者自己写的场景，用本账号 API 逐维判型并生成可溯源的人物小传。",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test --test-reporter=spec test/contract.test.mjs test/pipeline.test.mjs test/views.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

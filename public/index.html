@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>开放题版 MBTI · 行为叙述测评</title>
+<meta name="description" content="用开放式情境题替代选择题，让作答本身成为证据，输出可溯源的四维倾向画像与人物小传。">
+<link rel="stylesheet" href="./styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f4efe4'/%3E%3Ctext x='16' y='23' font-size='19' font-family='Georgia,serif' text-anchor='middle' fill='%23a8321f'%3EM%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<header class="masthead">
+  <div class="masthead__brand">
+    <span class="masthead__mark">M</span>
+    <span class="masthead__title">开放题版 MBTI</span>
+  </div>
+  <nav class="masthead__nav">
+    <span id="progress-label" class="masthead__progress"></span>
+    <button type="button" id="restart-btn" class="btn btn--ghost btn--sm" hidden>重新开始</button>
+  </nav>
+</header>
+
+<main id="view" class="view">
+  <!-- 静态兜底：JS 未执行或加载失败时，仍能看到入口与玩法说明。脚本就绪后由 app.js 整体替换。 -->
+  <p class="kicker">开放题版 MBTI</p>
+  <h1>把选择题换成你自己写的场景</h1>
+  <p class="lede">
+    传统量表让你在若干选项里挑一个最像的。这份测试反过来：每一题给你一个情境框定，
+    你写下自己在类似情境下<b>可能产生的行为与想法</b>。模型读的是你的原话，
+    按量表原有的维度框架给出倾向、置信度和一份能追溯到原句的人物小传。
+  </p>
+  <div class="section-rule"></div>
+  <ul class="fact-list">
+    <li><span class="k">题量</span><span>24 道开放情境题，分 4 组，每组 6 题，对应 E/I、S/N、T/F、J/P 四个维度。</span></li>
+    <li><span class="k">节奏</span><span>每组约 3–5 分钟。提交一组即给该维初判，全部填完再合成完整画像。</span></li>
+    <li><span class="k">证据</span><span>画像里的每一条判断都必须引用你的原话；引文对不上的会被丢弃，该维置信度随之下调。</span></li>
+    <li><span class="k">产出</span><span>四字母类型、每维倾向与置信度、可回查的引证表，以及一份逐段带引文的人物小传。</span></li>
+  </ul>
+  <div class="section-rule"></div>
+  <div class="notice notice--calm">
+    <b>为什么必须写具体场景。</b>含糊的作答（"我挺外向的""看情况"）不构成证据。
+    题干下方那三项自检，就是判型时找不找得到证据的直接依据。
+  </div>
+  <div class="notice">
+    <b>边界。</b>这是一份<b>倾向画像</b>，不是类型判定，也不是任何形式的诊断。
+    它没有信效度检验，不适用于招聘筛选等高风险决策。
+  </div>
+  <div class="btn-row">
+    <button type="button" class="btn btn--primary">开始作答</button>
+  </div>
+  <p class="small" style="margin-top:14px">如果这个按钮没有反应，说明页面脚本没有加载成功——请刷新页面；本机运行的部署方式请先确认 <code>npm start</code> 的服务还在。</p>
+</main>
+
+<footer class="colophon">
+  <p>这是一个<b>倾向画像工具</b>，不是类型判定，也不是任何形式的诊断。它的产出没有信效度检验，不适用于招聘筛选等高风险决策。</p>
+  <p>你的作答只发往判型 API 端点——本机部署时是本机服务与你的账号，静态部署时是你自己填 Key 的那个端点；任何情况下都不落在服务器上，草稿保存在你自己的浏览器里。</p>
+</footer>
+
+<script src="./app.js" type="module"></script>
+</body>
+</html>

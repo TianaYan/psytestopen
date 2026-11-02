@@ -1,0 +1,15 @@
+# 依赖（当前项目零运行时依赖，保留以防将来引入）
+node_modules/
+
+# 凭据：绝不入库
+.env
+.env.local
+.env.*.local
+
+# 本地日志与临时产物
+*.log
+*.out.log
+*.err.log
+mbti-open-bundle.zip
+.DS_Store
+Thumbs.db
