@@ -597,9 +597,94 @@ test('题库字段完整且题干互不重复', async () => {
       assert.ok(Array.isArray(item.minInfo) && item.minInfo.length >= 2, `题号 ${item.id} 缺少最小信息要求`);
       assert.ok(item.anchors && Object.keys(item.anchors).length === 2, `题号 ${item.id} 锚点必须两端各一`);
       assert.ok(Array.isArray(item.misreads) && item.misreads.length >= 1, `题号 ${item.id} 缺少误读防护`);
+      assert.ok(['core', 'extended'].includes(item.tier), `题号 ${item.id} 缺少 tier 分层`);
       assert.ok(!prompts.has(item.prompt), `题号 ${item.id} 题干重复`);
       prompts.add(item.prompt);
     }
+  } finally {
+    server.close();
+  }
+});
+
+test('题库每个维度恰好 4 道核心题、2 道扩展题', async () => {
+  const server = await startServer({ call: async () => ({}) });
+  try {
+    const res = await request(server, { path: '/items.json' });
+    for (const dimension of ['E/I', 'S/N', 'T/F', 'J/P']) {
+      const items = res.json.items.filter((i) => i.dimension === dimension);
+      assert.equal(items.length, 6, `${dimension} 应有 6 题`);
+      assert.equal(items.filter((i) => i.tier === 'core').length, 4, `${dimension} 应有 4 道核心题`);
+      assert.equal(items.filter((i) => i.tier === 'extended').length, 2, `${dimension} 应有 2 道扩展题`);
+    }
+    assert.equal(res.json.items.filter((i) => i.tier === 'core').length, 16, '核心题共 16 道');
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/score 允许跳题：写了一题就能提交，跳过的题记为缺口', async () => {
+  const llm = {
+    call: async () => ({
+      dimension: 'E/I',
+      lean: 'I',
+      score: 0.8,
+      confidence: 0.7,
+      evidence: [{ itemId: 'EI-03', quote: '我更想谁也别见', signal: '独处后想躲起来', strength: 'strong' }],
+      counterEvidence: [],
+      misreadChecks: [],
+      missing: [],
+      note: 'mock',
+    }),
+  };
+  const server = await startServer(llm);
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/score',
+      body: {
+        dimension: 'E/I',
+        answers: [
+          { itemId: 'EI-01', text: '' },
+          { itemId: 'EI-03', text: '一个人待了一整天之后，我更想谁也别见。' },
+          { itemId: 'EI-04', text: '' },
+        ],
+        skipped: ['EI-01', 'EI-04'],
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.answeredCount, 1, '应如实记录只写了一题');
+    assert.deepEqual(res.json.skipped, ['EI-01', 'EI-04']);
+    assert.ok(res.json.missing.includes('EI-01'), '跳过的题必须计入证据缺口');
+    assert.ok(res.json.missing.includes('EI-04'), '跳过的题必须计入证据缺口');
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/score 拒绝整维全空与不存在的跳过题号', async () => {
+  const server = await startServer({ call: async () => ({}) });
+  try {
+    const empty = await request(server, {
+      method: 'POST',
+      path: '/api/score',
+      body: {
+        dimension: 'E/I',
+        answers: [{ itemId: 'EI-01', text: '' }],
+        skipped: ['EI-01'],
+      },
+    });
+    assert.equal(empty.status, 400, '整维没有作答应当被拒');
+
+    const badSkip = await request(server, {
+      method: 'POST',
+      path: '/api/score',
+      body: {
+        dimension: 'E/I',
+        answers: [{ itemId: 'EI-01', text: '有作答' }],
+        skipped: ['EI-99'],
+      },
+    });
+    assert.equal(badSkip.status, 400, '不属于本维度的跳过题号应当被拒');
   } finally {
     server.close();
   }

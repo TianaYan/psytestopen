@@ -133,11 +133,15 @@ function renderItemsBlock(dimension, items) {
   return rows || '  （本维度没有题目）';
 }
 
-/** 渲染作答块。 */
-function renderAnswersBlock(answers) {
+/** 渲染作答块。跳过的题要明确标出，避免模型替空题编造证据。 */
+function renderAnswersBlock(answers, skippedIds = []) {
+  const skipped = new Set(skippedIds);
   return answers
     .map((answer, index) => {
-      const text = String(answer.text ?? '').trim() || '（本题未作答）';
+      const raw = String(answer.text ?? '').trim();
+      const text = raw || (skipped.has(answer.itemId)
+        ? '（本题未作答，受测者已跳过）'
+        : '（本题未作答）');
       return `### 第 ${index + 1} 题 · ${answer.itemId}\n${text}`;
     })
     .join('\n\n');
@@ -178,13 +182,21 @@ const FINAL_SCHEMA = `{
 
 /**
  * 构造 /api/score 的 system / user 消息。
- * @param {{dimension:string, items:Array, answers:Array}} params
+ * @param {{dimension:string, items:Array, answers:Array, skipped?:Array<string>}} params
  */
-export function buildScoreMessages({ dimension, items, answers }) {
+export function buildScoreMessages({ dimension, items, answers, skipped = [] }) {
   const lens = getLens(dimension);
   if (!lens) throw new Error(`未知维度：${dimension}`);
   const meta = DIMENSION_ORDER.find((d) => d.key === dimension);
   const poles = meta ? meta.poles : [];
+
+  const skippedIds = Array.isArray(skipped) ? skipped.map(String) : [];
+  const asked = skippedIds.length
+    ? [...answers.map((a) => String(a.itemId)), ...skippedIds]
+    : null;
+  // 只渲染本次真正问到的题：快速版没问的题不该出现在题面里。
+  const askedItems = asked ? items.filter((item) => asked.includes(item.id)) : items;
+  const answeredCount = answers.filter((a) => String(a.text ?? '').trim()).length;
 
   const system = [
     `你是一个心理测量评分助手。你这次只评估「${dimension}」这一个维度，不得推测、不得提及其他维度。`,
@@ -199,7 +211,7 @@ export function buildScoreMessages({ dimension, items, answers }) {
     `证据门槛：${lens.threshold}`,
     '',
     '【本维度的题目与锚点】',
-    renderItemsBlock(dimension, items),
+    renderItemsBlock(dimension, askedItems),
     '',
     '【硬性规则】',
     '1. 只依据受测者的原话作答。每条 evidence 的 quote 必须是该题作答中的一段连续原文，逐字照抄；不得改写、不得拼接两处、不得翻译、不得省略、不得补字。',
@@ -209,6 +221,10 @@ export function buildScoreMessages({ dimension, items, answers }) {
     '5. counterEvidence 填与结论相反的证据；没有就留空数组。',
     '6. 禁止使用泛化赞美，禁止"你是一个…的人"这类盖章句。',
     '7. 所有说明性文字（signal、note、misreadChecks、missing）一律用中文书写；除受测者原话里本来就有的英文外，不要在中文里夹用英文单词。',
+    `8. 本次本维度共问了 ${askedItems.length} 题，其中受测者实际作答 ${answeredCount} 题`
+      + `${skippedIds.length ? `、跳过 ${skippedIds.length} 题（${skippedIds.join('、')}）` : ''}。`
+      + '被跳过的题没有任何作答材料：不得为其编造 evidence 或 counterEvidence，必须把它的题号写进 missing；'
+      + '证据条数明显少于题数时，confidence 必须相应下调。',
     '',
     '【输出格式】',
     '严格输出一个 JSON 对象，不要 markdown 代码块，不要任何解释文字：',
@@ -218,7 +234,7 @@ export function buildScoreMessages({ dimension, items, answers }) {
   const user = [
     `以下是受测者在「${dimension}」维度下的作答原文。请严格按 system 中的规则评分。`,
     '',
-    renderAnswersBlock(answers),
+    renderAnswersBlock(answers, skippedIds),
   ].join('\n');
 
   return { system, user };

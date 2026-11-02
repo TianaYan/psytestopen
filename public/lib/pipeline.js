@@ -28,15 +28,27 @@ export function polesByDimension() {
  *
  * @param {object} params
  * @param {string} params.dimension
- * @param {Array<{itemId:string,text:string}>} params.answers
- * @param {Array} params.items 本维度全部题目（含锚点与误读防护）
+ * @param {Array<{itemId:string,text:string}>} params.answers 本次问到的全部题目；跳过的题 text 为空
+ * @param {Array<string>} [params.skipped] 受测者主动跳过的题号
+ * @param {Array} params.items 本维度题库
  * @param {{call:Function}} params.client
  */
-export async function scoreDimension({ dimension, answers, items, client }) {
-  const { system, user } = buildScoreMessages({ dimension, items, answers });
+export async function scoreDimension({ dimension, answers, items, skipped = [], client }) {
+  const skippedIds = Array.isArray(skipped) ? skipped.map(String) : [];
+  const { system, user } = buildScoreMessages({ dimension, items, answers, skipped: skippedIds });
   const raw = await client.call({ system, user, temperature: 0.2, maxTokens: 3000 });
   const poles = DIMENSION_ORDER.find((d) => d.key === dimension)?.poles || [];
-  return validateScore(raw, answers, { poles });
+  const result = validateScore(raw, answers, { poles });
+
+  // 跳过的题没有任何作答材料：必须如实计入证据缺口，不能悄悄消失。
+  const answeredCount = answers.filter((a) => String(a.text ?? '').trim()).length;
+  result.answeredCount = answeredCount;
+  result.skipped = skippedIds;
+  if (skippedIds.length) {
+    const missing = new Set([...(result.missing || []), ...skippedIds]);
+    result.missing = [...missing];
+  }
+  return result;
 }
 
 /**

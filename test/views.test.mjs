@@ -19,6 +19,7 @@ import {
   normalizeState,
   readoutOf,
   expectedTypeFrom,
+  coverageLine,
   state,
   esc,
 } from '../public/app.js';
@@ -415,6 +416,97 @@ test('buildFinalView 不重复小传标题', () => {
   assert.match(html, /<h2>人物小传<\/h2>/);
   const occurrences = html.split('在具体经验与关系感受之间保持弹性').length - 1;
   assert.equal(occurrences, 1, '标题只应出现一次');
+});
+
+test('buildStartView 提供完整版与快速版选择', () => {
+  const bank = {
+    dimensions: ITEM_BANK.dimensions,
+    items: [
+      ...['E/I', 'S/N', 'T/F', 'J/P'].flatMap((d, dimIndex) => [0, 1, 2, 3, 4, 5].map((n) => ({
+        id: `${d.split('/')[0]}-0${n + 1}`,
+        dimension: d,
+        tier: n < 4 ? 'core' : 'extended',
+      }))),
+    ],
+  };
+  const full = buildStartView({ bank, health: null, resultCount: 0, mode: 'full' });
+  assert.match(full, /data-mode="full"/);
+  assert.match(full, /data-mode="quick"/);
+  assert.match(full, /每组 6 题/);
+  assert.match(full, /共 24 题/);
+
+  const quick = buildStartView({ bank, health: null, resultCount: 0, mode: 'quick' });
+  assert.match(quick, /每组 4 题/);
+  assert.match(quick, /共 16 题/);
+});
+
+test('buildStartView 已有作答时不提供版本切换', () => {
+  const html = buildStartView({
+    bank: { dimensions: ITEM_BANK.dimensions, items: [] },
+    health: null,
+    resultCount: 2,
+    modeSelectable: false,
+  });
+  assert.ok(!html.includes('data-mode="quick"'), '已有进度时不应再让用户换版本');
+  assert.match(html, /想换版本请点/);
+});
+
+test('buildQuizView 提供跳过入口与已跳过提示', () => {
+  const html = buildQuizView({
+    dimension: 'E/I',
+    item: { id: 'EI-01', prompt: '题干', writingGuide: '指引', minInfo: ['要素一'] },
+    itemIndex: 0,
+    total: 4,
+    text: '',
+    checked: [],
+    isLastDimension: false,
+    error: null,
+    statusStrip: '',
+    errorBanner: '',
+    skipped: false,
+  });
+  assert.match(html, /id="skip-btn"/);
+  assert.match(html, /跳过这题/);
+
+  const skippedHtml = buildQuizView({
+    dimension: 'E/I',
+    item: { id: 'EI-01', prompt: '题干', writingGuide: '指引', minInfo: ['要素一'] },
+    itemIndex: 0,
+    total: 4,
+    text: '',
+    checked: [],
+    isLastDimension: false,
+    error: null,
+    statusStrip: '',
+    errorBanner: '',
+    skipped: true,
+  });
+  assert.match(skippedHtml, /本题已跳过/);
+  assert.match(skippedHtml, /重新作答/);
+});
+
+test('coverageLine 披露实际作答条数与跳过的题号', () => {
+  assert.match(
+    coverageLine({ answeredCount: 4, skipped: ['EI-02', 'EI-06'] }),
+    /实际作答 4 题.*跳过 2 题（EI-02、EI-06）/s,
+  );
+  assert.equal(coverageLine(null), '');
+});
+
+test('buildFinalView 在报告里说明跳过的题', () => {
+  const html = buildFinalView({
+    final: FINAL_RESULT,
+    itemBank: ITEM_BANK,
+    dimensionResults: [{
+      ...DIMENSION_RESULT,
+      answeredCount: 4,
+      skipped: ['EI-06'],
+    }],
+    error: null,
+    errorBanner: '',
+  });
+  assert.match(html, /实际作答 4 题/);
+  assert.match(html, /EI-06/);
 });
 
 /* ---------- 报告与逐维结论是否同源 ---------- */

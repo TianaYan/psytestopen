@@ -116,6 +116,7 @@ function validateScoreRequest(body, items) {
   const allowed = new Set(items.items.filter((i) => i.dimension === dimension).map((i) => i.id));
   const rawAnswers = Array.isArray(body?.answers) ? body.answers : [];
   const answers = [];
+  const seen = new Set();
   for (const entry of rawAnswers) {
     const itemId = String(entry?.itemId ?? '');
     const text = String(entry?.text ?? '').trim();
@@ -124,24 +125,41 @@ function validateScoreRequest(body, items) {
       err.statusCode = 400;
       throw err;
     }
-    if (!text) {
-      const err = new Error(`题号 ${itemId} 未作答`);
+    if (seen.has(itemId)) {
+      const err = new Error(`题号 ${itemId} 重复提交`);
       err.statusCode = 400;
       throw err;
     }
+    seen.add(itemId);
     if (text.length > MAX_ANSWER_CHARS) {
       const err = new Error(`题号 ${itemId} 超过 ${MAX_ANSWER_CHARS} 字上限`);
       err.statusCode = 400;
       throw err;
     }
+    // 跳过的题也会出现在 answers 里（text 为空），这样提示词能对上题号。
     answers.push({ itemId, text });
   }
-  if (!answers.length) {
-    const err = new Error('没有可评分的作答');
+
+  const skipped = (Array.isArray(body?.skipped) ? body.skipped : []).map(String);
+  for (const itemId of skipped) {
+    if (!allowed.has(itemId)) {
+      const err = new Error(`题号 ${itemId} 不属于维度 ${dimension}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!seen.has(itemId)) {
+      const err = new Error(`题号 ${itemId} 被标记为跳过，但不在本次作答的题目里`);
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  if (!answers.some((a) => a.text)) {
+    const err = new Error('本维度至少要写一题');
     err.statusCode = 400;
     throw err;
   }
-  return { dimension, answers };
+  return { dimension, answers, skipped };
 }
 
 /**
@@ -179,11 +197,14 @@ export function createServer({ config, llm, items } = {}) {
         const body = await readBody(req);
 
         if (pathname === '/api/score') {
-          const { dimension, answers } = validateScoreRequest(body, bank);
-          console.log(`[mbti-open] POST /api/score ${dimension} (${answers.length} 题)`);
+          const { dimension, answers, skipped } = validateScoreRequest(body, bank);
+          console.log(
+            `[mbti-open] POST /api/score ${dimension} (${answers.length} 题`
+            + `${skipped.length ? `，跳过 ${skipped.length}` : ''})`,
+          );
 
           const result = await enqueue(`score:${dimension}`, () =>
-            scoreDimension({ dimension, answers, items: bank.items, client }));
+            scoreDimension({ dimension, answers, skipped, items: bank.items, client }));
 
           sendJson(res, 200, result);
           return;

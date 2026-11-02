@@ -93,7 +93,9 @@ export const state = {
   stage: 'start',      // start | quiz | generating | final
   dimIndex: 0,
   itemIndex: 0,
+  mode: 'full',        // full（每维 6 题）| quick（每维 4 题，只取 core 层）
   answers: {},         // dimension -> { itemId: { text, checked[] } }
+  skipped: {},         // dimension -> [itemId]（受测者主动跳过的题）
   results: [],         // 已完成的维度判型结果
   pending: {},         // dimension -> true（后台计算中）
   errors: {},          // dimension -> 错误信息
@@ -132,12 +134,21 @@ function currentDimension() {
 
 function itemsOf(dimension) {
   if (!bank) return [];
-  return bank.items.filter((item) => item.dimension === dimension);
+  const list = bank.items.filter((item) => item.dimension === dimension);
+  // 快速版只问每维信号最干净的 4 题（core 层），扩展层留给完整版。
+  if (state.mode === 'quick') return list.filter((item) => item.tier === 'core');
+  return list;
 }
 
 function answersOf(dimension) {
   if (!state.answers[dimension]) state.answers[dimension] = {};
   return state.answers[dimension];
+}
+
+/** 该维度被主动跳过的题号。 */
+function skippedOf(dimension) {
+  if (!Array.isArray(state.skipped[dimension])) state.skipped[dimension] = [];
+  return state.skipped[dimension];
 }
 
 export function saveDraft() {
@@ -146,7 +157,9 @@ export function saveDraft() {
       stage: state.stage,
       dimIndex: state.dimIndex,
       itemIndex: state.itemIndex,
+      mode: state.mode,
       answers: state.answers,
+      skipped: state.skipped,
       results: state.results,
       pending: state.pending,
       errors: state.errors,
@@ -167,7 +180,9 @@ export function loadDraft() {
       stage: parsed.stage || 'start',
       dimIndex: Number(parsed.dimIndex) || 0,
       itemIndex: Number(parsed.itemIndex) || 0,
+      mode: parsed.mode === 'quick' ? 'quick' : 'full',
       answers: parsed.answers || {},
+      skipped: parsed.skipped || {},
       results: Array.isArray(parsed.results) ? parsed.results : [],
       pending: parsed.pending || {},
       errors: parsed.errors || {},
@@ -198,6 +213,10 @@ export function normalizeState() {
       state.dimIndex = nextMissing;
       state.itemIndex = 0;
     }
+    // 题数随版本变化（完整版 6 题 / 快速版 4 题），别让游标落在范围外
+    const total = itemsOf(DIM_ORDER[state.dimIndex]).length;
+    if (total > 0 && state.itemIndex > total - 1) state.itemIndex = total - 1;
+    if (state.itemIndex < 0) state.itemIndex = 0;
   }
 
   if (state.stage === 'start' && state.results.length && !state.final) {
@@ -254,11 +273,17 @@ export function bindRestart(button) {
  * 单维判型。local 模式走同源服务端；direct 模式由浏览器直连 API。
  * 两条路径调用的是同一份 public/lib/pipeline.js，结果口径一致。
  */
-async function requestScore(dimension, answers) {
+async function requestScore(dimension, answers, skipped = []) {
   if (IS_DIRECT) {
-    return scoreDimension({ dimension, answers, items: itemsOf(dimension), client: directClient() });
+    return scoreDimension({
+      dimension,
+      answers,
+      skipped,
+      items: itemsOf(dimension),
+      client: directClient(),
+    });
   }
-  return postJSON('api/score', { dimension, answers });
+  return postJSON('api/score', { dimension, answers, skipped });
 }
 
 /** 合成最终画像。同样两种路径。 */
@@ -351,6 +376,7 @@ export function buildKeyPanel({ hasKey = false, endpoint = '', model = '' } = {}
 
 export function buildStartView({
   bank: itemBank, health: itemHealth, resultCount = 0, keyPanel = '', direct = false,
+  mode = 'full', modeSelectable = true,
 } = {}) {
   const healthLine = direct
     ? `<span class="small">静态直连模式 · 浏览器直接调用 API · 密钥只存在你的浏览器里</span>`
@@ -360,7 +386,35 @@ export function buildStartView({
         : `<span class="small" style="color:var(--warn-ink)">服务未找到可用凭证，判型会失败：${esc(itemHealth.model || '模型未配置')}</span>`)
       : '<span class="small">正在检查服务状态…</span>';
 
-  const count = itemBank ? itemBank.items.length : 24;
+  const allItems = itemBank ? itemBank.items : [];
+  const coreItems = allItems.filter((i) => i.tier === 'core');
+  const isQuick = mode === 'quick';
+  const perDimension = isQuick ? 4 : 6;
+  const total = isQuick ? (coreItems.length || 16) : (allItems.length || 24);
+  const count = allItems.length || 24;
+
+  const modePanel = modeSelectable
+    ? `<div class="mode-panel">
+        <h2 class="mode-panel__title">这次想花多少时间？</h2>
+        <p class="small">
+          两个版本问的是同一批题目，只是数量不同：快速版每个维度只问信号最干净的 4 题，
+          完整版每维 6 题、覆盖的行为侧面更全。哪个维度写不出来都可以<b>跳过</b>，
+          跳过的题会在报告里如实记成证据缺口，而不是悄悄消失。
+        </p>
+        <div class="mode-panel__row">
+          <button type="button" class="mode-card${isQuick ? '' : ' mode-card--on'}" data-mode="full">
+            <span class="mode-card__title">完整版</span>
+            <span class="mode-card__meta">每维 6 题 · 共 ${count} 题 · 约 15–20 分钟</span>
+            <span class="mode-card__note">证据最厚，反向证据最容易浮出来</span>
+          </button>
+          <button type="button" class="mode-card${isQuick ? ' mode-card--on' : ''}" data-mode="quick">
+            <span class="mode-card__title">快速版</span>
+            <span class="mode-card__meta">每维 4 题 · 共 ${coreItems.length || 16} 题 · 约 10–13 分钟</span>
+            <span class="mode-card__note">省三分之一时间，每维少两个行为侧面</span>
+          </button>
+        </div>
+      </div>`
+    : `<p class="small">本次为${isQuick ? '快速版（每维 4 题）' : '完整版（每维 6 题）'}。想换版本请点右上角"重新开始"。</p>`;
 
   return `
     <p class="kicker">开放题版 MBTI</p>
@@ -374,13 +428,15 @@ export function buildStartView({
     <div class="section-rule"></div>
 
     <ul class="fact-list">
-      <li><span class="k">题量</span><span>${count} 道开放情境题，分 4 组，每组 6 题，对应 E/I、S/N、T/F、J/P 四个维度。</span></li>
-      <li><span class="k">节奏</span><span>每组约 3–5 分钟。提交一组后立刻进入下一组，上一组的判型在后台并行计算。</span></li>
+      <li><span class="k">题量</span><span>${isQuick ? '快速版' : '完整版'}共 ${total} 道开放情境题，分 4 组，每组 ${perDimension} 题，对应 E/I、S/N、T/F、J/P 四个维度。</span></li>
+      <li><span class="k">节奏</span><span>每组约 ${isQuick ? '2–3' : '3–5'} 分钟。提交一组后立刻进入下一组，上一组的判型在后台并行计算。</span></li>
       <li><span class="k">证据</span><span>画像里的每一条判断都必须引用你的原话；引文对不上的会被丢弃，该维置信度随之下调。</span></li>
       <li><span class="k">产出</span><span>四维读数与全部证据、四字母类型、可回查的引证表，以及一份逐段带引文的人物小传。</span></li>
     </ul>
 
     <div class="section-rule"></div>
+
+    ${modePanel}
 
     <div class="notice notice--calm">
       <b>为什么必须写具体场景。</b>含糊的作答（"我挺外向的""看情况"）不构成证据。
@@ -405,8 +461,15 @@ export function buildStartView({
 export function buildQuizView({
   dimension, item, itemIndex = 0, total = 6, text = '', checked = [],
   isLastDimension = false, error = null, statusStrip = '', errorBanner = '',
+  skipped = false,
 } = {}) {
   const alt = DIM_ORDER.indexOf(dimension) % 2 === 1;
+  const skipBanner = skipped
+    ? `<div class="notice notice--calm">
+        <b>本题已跳过。</b>没有作答材料，报告会把它记成证据缺口，不会替你猜。
+        想写的话直接在下面输入就自动取消跳过。
+      </div>`
+    : '';
   return `
     ${statusStrip}
     ${errorBanner}
@@ -418,6 +481,8 @@ export function buildQuizView({
 
     <h2 class="prompt">${esc(item.prompt)}</h2>
     <p class="guide">${esc(item.writingGuide || '')}</p>
+
+    ${skipBanner}
 
     <label class="label" for="answer">你的作答</label>
     <textarea id="answer" placeholder="写下你真实会做的事、真实会有的念头……">${esc(text)}</textarea>
@@ -439,6 +504,7 @@ export function buildQuizView({
         ${itemIndex < total - 1
           ? '<button type="button" class="btn" id="next-btn">下一题</button>'
           : `<button type="button" class="btn btn--primary" id="submit-dim-btn">${isLastDimension ? '提交并生成画像' : '提交并继续下一维'}</button>`}
+        <button type="button" class="btn btn--ghost" id="skip-btn">${skipped ? '重新作答' : '跳过这题'}</button>
       </div>
     </div>
 
@@ -466,6 +532,22 @@ export function buildGeneratingView({ statusStrip = '', errorBanner = '', error 
 
     ${error ? `<div class="notice" style="margin-top:18px">${esc(error)}</div>` : ''}
   `;
+}
+
+/** 本维度实际用了多少作答、跳过了哪几题。少答要说出来，不能让读者以为证据是完整的。 */
+export function coverageLine(result) {
+  if (!result) return '';
+  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+  const answered = Number.isFinite(result.answeredCount)
+    ? result.answeredCount
+    : null;
+  if (!skipped.length && answered === null) return '';
+  if (!skipped.length) {
+    return `<p class="small">本维度实际作答 ${answered} 题。</p>`;
+  }
+  return `<p class="small">本维度实际作答 ${answered === null ? '若干' : answered} 题，`
+    + `跳过 ${skipped.length} 题（${esc(skipped.join('、'))}）。`
+    + '跳过的题没有作答材料，报告不会替它们推断倾向。</p>';
 }
 
 /** 单个维度的证据区（支撑 / 反向 / 易误读 / 缺口），供维度卡与最终报告共用。 */
@@ -651,6 +733,7 @@ export function buildFinalView({
              </span>
            </h4>
            ${result.note ? `<p class="small">${esc(result.note)}</p>` : ''}
+           ${coverageLine(result)}
            ${buildDimensionDetail(result)}
          </section>`;
   }).join('')}`
@@ -725,6 +808,7 @@ function mergeResult(result) {
 async function runScore(dimension) {
   const items = itemsOf(dimension);
   const bucket = answersOf(dimension);
+  const skipped = skippedOf(dimension).filter((id) => items.some((item) => item.id === id));
   const answers = items.map((item) => ({
     itemId: item.id,
     text: (bucket[item.id] || {}).text || '',
@@ -736,7 +820,7 @@ async function runScore(dimension) {
   render();
 
   try {
-    const result = await requestScore(dimension, answers);
+    const result = await requestScore(dimension, answers, skipped);
     mergeResult(result);
   } catch (err) {
     state.errors[dimension] = err.message;
@@ -755,12 +839,21 @@ function submitDimension() {
   const items = itemsOf(dimension);
   const bucket = answersOf(dimension);
 
-  const missing = items.filter((item) => !((bucket[item.id] || {}).text || '').trim());
-  if (missing.length) {
-    state.error = `还有 ${missing.length} 题没写：${missing.map((m) => m.id).join('、')}。可以先跳过，稍后回来补。`;
+  const written = (item) => ((bucket[item.id] || {}).text || '').trim();
+  const missing = items.filter((item) => !written(item));
+
+  if (!items.some(written)) {
+    state.error = '这一维至少要写一题。写不出来可以跳过，但不能整维都空着。';
     render();
     return;
   }
+
+  // 没写的题自动计为跳过；跳过的题会带着题号一起提交，由服务端记为证据缺口。
+  const skipped = [...new Set([
+    ...skippedOf(dimension).filter((id) => items.some((item) => item.id === id)),
+    ...missing.map((item) => item.id),
+  ])];
+  state.skipped[dimension] = skipped;
   state.error = null;
 
   if (state.dimIndex < DIM_ORDER.length - 1) {
@@ -870,6 +963,23 @@ function renderStart() {
     resultCount: state.results.length,
     keyPanel,
     direct: IS_DIRECT,
+    mode: state.mode,
+    modeSelectable: state.results.length === 0 && !state.final,
+  });
+
+  dom.view.querySelectorAll('[data-mode]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const next = button.dataset.mode === 'quick' ? 'quick' : 'full';
+      if (next === state.mode) return;
+      state.mode = next;
+      // 题集变了，之前写的答案不再对应当前版本
+      state.answers = {};
+      state.skipped = {};
+      state.itemIndex = 0;
+      state.error = null;
+      saveDraft();
+      render();
+    });
   });
 
   dom.view.querySelector('#api-key-save')?.addEventListener('click', () => {
@@ -925,6 +1035,7 @@ function renderQuiz() {
   const text = entry.text || '';
   const checked = entry.checked || [];
   const total = items.length;
+  const isSkipped = skippedOf(dimension).includes(item.id);
 
   dom.view.innerHTML = buildQuizView({
     dimension,
@@ -937,6 +1048,7 @@ function renderQuiz() {
     error: state.error,
     statusStrip: currentStatusStrip(),
     errorBanner: currentErrorBanner(),
+    skipped: isSkipped,
   });
 
   bindRetryButtons();
@@ -947,6 +1059,13 @@ function renderQuiz() {
   textarea?.addEventListener('input', () => {
     const current = answersOf(dimension);
     current[item.id] = { text: textarea.value, checked: (current[item.id] || {}).checked || [] };
+    // 一开始写就等于取消跳过
+    const skippedList = skippedOf(dimension);
+    const at = skippedList.indexOf(item.id);
+    if (at !== -1) {
+      skippedList.splice(at, 1);
+      state.skipped[dimension] = skippedList;
+    }
     if (counter) counter.textContent = `${textarea.value.length} 字`;
     saveDraft();
   });
@@ -975,6 +1094,31 @@ function renderQuiz() {
     state.itemIndex = Math.min(total - 1, state.itemIndex + 1);
     state.error = null;
     saveDraft();
+    render();
+  });
+
+  dom.view.querySelector('#skip-btn')?.addEventListener('click', () => {
+    const list = skippedOf(dimension);
+    const at = list.indexOf(item.id);
+    if (at !== -1) {
+      // 取消跳过：回到正常作答状态
+      list.splice(at, 1);
+      state.skipped[dimension] = list;
+      state.error = null;
+      saveDraft();
+      render();
+      return;
+    }
+    list.push(item.id);
+    state.skipped[dimension] = list;
+    const current = answersOf(dimension);
+    current[item.id] = { text: '', checked: (current[item.id] || {}).checked || [] };
+    state.error = null;
+    saveDraft();
+    if (state.itemIndex < total - 1) {
+      state.itemIndex += 1;
+      saveDraft();
+    }
     render();
   });
 

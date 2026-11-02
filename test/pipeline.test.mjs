@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { scoreDimension, finalizeReport, polesByDimension } from '../public/lib/pipeline.js';
+import { buildScoreMessages } from '../public/lib/prompts.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BANK = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'public', 'items.json'), 'utf8'));
@@ -150,4 +151,54 @@ test('polesByDimension 给出四维两极', () => {
   assert.deepEqual(poles['S/N'], ['S', 'N']);
   assert.deepEqual(poles['T/F'], ['T', 'F']);
   assert.deepEqual(poles['J/P'], ['J', 'P']);
+});
+
+test('buildScoreMessages 明确标出跳过的题并禁止为其编造证据', () => {
+  const { system, user } = buildScoreMessages({
+    dimension: 'E/I',
+    items: EI_ITEMS,
+    answers: [
+      { itemId: 'EI-01', text: '' },
+      { itemId: 'EI-03', text: '一个人待了一整天之后，我更想谁也别见。' },
+    ],
+    skipped: ['EI-01'],
+  });
+
+  assert.match(user, /本题未作答，受测者已跳过/);
+  assert.match(system, /实际作答 1 题/);
+  assert.match(system, /EI-01/, '跳过的题号要写进规则里');
+  assert.match(system, /不得为其编造/);
+  // 没问到的题不该出现在题面里（快速版只给 4 题时尤其重要）
+  assert.ok(!user.includes('EI-06'), '未作答且未跳过的题不应出现在作答块里');
+});
+
+test('scoreDimension 把跳过的题记入证据缺口并记录作答条数', async () => {
+  const client = fakeClient([{
+    dimension: 'E/I',
+    lean: 'I',
+    score: 0.8,
+    confidence: 0.7,
+    evidence: [{ itemId: 'EI-03', quote: '我更想谁也别见', signal: '独处后想躲起来', strength: 'strong' }],
+    counterEvidence: [],
+    misreadChecks: [],
+    missing: [],
+    note: 'mock',
+  }]);
+
+  const result = await scoreDimension({
+    dimension: 'E/I',
+    answers: [
+      { itemId: 'EI-01', text: '' },
+      { itemId: 'EI-03', text: '一个人待了一整天之后，我更想谁也别见。' },
+    ],
+    items: EI_ITEMS,
+    skipped: ['EI-01'],
+    client,
+  });
+
+  assert.equal(result.answeredCount, 1);
+  assert.deepEqual(result.skipped, ['EI-01']);
+  assert.ok(result.missing.includes('EI-01'), '跳过的题必须计入证据缺口');
+  // 跳过的题没有作答材料，任何引用它的引文都应被丢弃
+  assert.ok(!result.evidence.some((e) => e.itemId === 'EI-01'));
 });

@@ -202,6 +202,71 @@ p { margin: 0 0 16px; }
 
 .btn-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
+/* ---------- 版本选择（完整版 / 快速版） ---------- */
+
+.mode-panel {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--ink);
+  background: var(--paper-deep);
+  padding: 20px 22px 18px;
+  margin: 26px 0;
+}
+
+.mode-panel__title {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.mode-panel__row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.mode-card {
+  flex: 1 1 260px;
+  min-width: 220px;
+  text-align: left;
+  font-family: var(--sans);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  padding: 14px 16px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.mode-card:hover { border-color: var(--ink); }
+
+.mode-card--on {
+  border-color: var(--accent);
+  border-left-width: 3px;
+  background: #fdf6f1;
+}
+
+.mode-card__title {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.mode-card__meta {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.mode-card__note {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
 /* ---------- 静态部署版的密钥面板 ---------- */
 
 .key-panel {

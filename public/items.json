@@ -10,6 +10,7 @@
   "items": [
     {
       "id": "EI-01",
+      "tier": "core",
       "dimension": "E/I",
       "secondaryDimensions": [],
       "construct": "社交之后精力是被充电还是被消耗",
@@ -24,6 +25,7 @@
     },
     {
       "id": "EI-02",
+      "tier": "extended",
       "dimension": "E/I",
       "secondaryDimensions": ["J/P"],
       "construct": "带人带项目时的能量来源",
@@ -38,6 +40,7 @@
     },
     {
       "id": "EI-03",
+      "tier": "core",
       "dimension": "E/I",
       "secondaryDimensions": [],
       "construct": "独处之后的恢复方式",
@@ -52,6 +55,7 @@
     },
     {
       "id": "EI-04",
+      "tier": "core",
       "dimension": "E/I",
       "secondaryDimensions": [],
       "construct": "在群体中但不参与时的位置感",
@@ -66,6 +70,7 @@
     },
     {
       "id": "EI-05",
+      "tier": "core",
       "dimension": "E/I",
       "secondaryDimensions": ["J/P"],
       "construct": "社交能量见底时的阈值与反应",
@@ -80,6 +85,7 @@
     },
     {
       "id": "EI-06",
+      "tier": "extended",
       "dimension": "E/I",
       "secondaryDimensions": ["T/F"],
       "construct": "在讨论中不自觉接管方向",
@@ -95,6 +101,7 @@
 
     {
       "id": "SN-01",
+      "tier": "core",
       "dimension": "S/N",
       "secondaryDimensions": [],
       "construct": "具体日子的感官细节复现",
@@ -109,6 +116,7 @@
     },
     {
       "id": "SN-02",
+      "tier": "core",
       "dimension": "S/N",
       "secondaryDimensions": [],
       "construct": "自发联想（看到 A 想到 B）",
@@ -123,6 +131,7 @@
     },
     {
       "id": "SN-03",
+      "tier": "extended",
       "dimension": "S/N",
       "secondaryDimensions": ["J/P"],
       "construct": "对未来推演的默认习惯",
@@ -137,6 +146,7 @@
     },
     {
       "id": "SN-04",
+      "tier": "core",
       "dimension": "S/N",
       "secondaryDimensions": [],
       "construct": "有经验可循时是复用还是重构",
@@ -151,6 +161,7 @@
     },
     {
       "id": "SN-05",
+      "tier": "extended",
       "dimension": "S/N",
       "secondaryDimensions": ["T/F"],
       "construct": "日常小事里的意义捕捉",
@@ -165,6 +176,7 @@
     },
     {
       "id": "SN-06",
+      "tier": "core",
       "dimension": "S/N",
       "secondaryDimensions": ["J/P"],
       "construct": "完全空出来的一天，脑子先出现什么",
@@ -180,6 +192,7 @@
 
     {
       "id": "TF-01",
+      "tier": "core",
       "dimension": "T/F",
       "secondaryDimensions": [],
       "construct": "给建议时的依据来源",
@@ -194,6 +207,7 @@
     },
     {
       "id": "TF-02",
+      "tier": "core",
       "dimension": "T/F",
       "secondaryDimensions": [],
       "construct": "他人情绪爆发时的第一反应",
@@ -208,6 +222,7 @@
     },
     {
       "id": "TF-03",
+      "tier": "extended",
       "dimension": "T/F",
       "secondaryDimensions": [],
       "construct": "搞砸事情之后的脑内第一句",
@@ -222,6 +237,7 @@
     },
     {
       "id": "TF-04",
+      "tier": "core",
       "dimension": "T/F",
       "secondaryDimensions": [],
       "construct": "冲突当场必须解决时的优先级",
@@ -236,6 +252,7 @@
     },
     {
       "id": "TF-05",
+      "tier": "core",
       "dimension": "T/F",
       "secondaryDimensions": [],
       "construct": "对人不一致的敏感度",
@@ -250,6 +267,7 @@
     },
     {
       "id": "TF-06",
+      "tier": "extended",
       "dimension": "T/F",
       "secondaryDimensions": [],
       "construct": "评价他人行为的标准",
@@ -265,6 +283,7 @@
 
     {
       "id": "JP-01",
+      "tier": "core",
       "dimension": "J/P",
       "secondaryDimensions": [],
       "construct": "计划工具的真实状态",
@@ -279,6 +298,7 @@
     },
     {
       "id": "JP-02",
+      "tier": "core",
       "dimension": "J/P",
       "secondaryDimensions": [],
       "construct": "临时改计划的真实感受",
@@ -293,6 +313,7 @@
     },
     {
       "id": "JP-03",
+      "tier": "core",
       "dimension": "J/P",
       "secondaryDimensions": [],
       "construct": "对未完成事项的容忍度",
@@ -307,6 +328,7 @@
     },
     {
       "id": "JP-04",
+      "tier": "core",
       "dimension": "J/P",
       "secondaryDimensions": [],
       "construct": "收尾时的结束感",
@@ -321,6 +343,7 @@
     },
     {
       "id": "JP-05",
+      "tier": "extended",
       "dimension": "J/P",
       "secondaryDimensions": [],
       "construct": "计划被打乱后的处理方式",
@@ -335,6 +358,7 @@
     },
     {
       "id": "JP-06",
+      "tier": "extended",
       "dimension": "J/P",
       "secondaryDimensions": [],
       "construct": "对关门的偏好",
