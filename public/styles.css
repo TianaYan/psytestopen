@@ -284,17 +284,7 @@ p { margin: 0 0 16px; }
   margin: 0 0 8px;
 }
 
-.key-panel__row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  align-items: center;
-  margin: 14px 0 8px;
-}
-
 .key-input {
-  flex: 1 1 320px;
-  min-width: 240px;
   font-family: var(--mono);
   font-size: 14px;
   padding: 11px 14px;
@@ -334,6 +324,16 @@ p { margin: 0 0 16px; }
   flex-direction: column;
   gap: 5px;
   min-width: 0;
+}
+
+/*
+ * 表单框高度。此前 .key-input 上的 flex-basis 在这个纵向 flex 容器里被当成了高度，
+ * 撑到 344px；现在显式给高度：86px ≈ 原来的 1/4。
+ * 想用常规表单高度（约 40px），把这一行改成 height: 40px 即可。
+ */
+.api-field .key-input {
+  flex: 0 0 auto;
+  height: 86px;
 }
 
 .api-field--wide { grid-column: 1 / -1; }

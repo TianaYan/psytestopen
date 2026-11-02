@@ -111,7 +111,11 @@ function loadApiCfg() {
   } catch {
     extra = {};
   }
-  return { ...DEFAULT_API_CFG, ...extra };
+  const merged = { ...DEFAULT_API_CFG, ...extra };
+  // 预设被删掉后（比如 Anthropic 已从列表移除），旧的端点不该留在那儿装成别的厂商。
+  const known = PROVIDER_PRESETS.some((p) => p.id === merged.providerId);
+  if (!known) return { ...DEFAULT_API_CFG };
+  return merged;
 }
 
 function saveApiCfg(patch) {
@@ -164,14 +168,14 @@ function directClient() {
 
 const apiPanelState = { message: null, busy: false };
 
-/** 读取面板上的几个字段。 */
+/** 读取面板上的几个字段。线上版只说 OpenAI 协议。 */
 function readApiPanel() {
   const q = (selector) => dom.view.querySelector(selector);
   return {
     providerId: String(q('#api-provider')?.value || 'custom'),
     baseURL: String(q('#api-baseurl')?.value || '').trim(),
     model: String(q('#api-model')?.value || '').trim(),
-    protocol: String(q('#api-protocol')?.value || 'openai'),
+    protocol: 'openai',
     key: String(q('#api-key-input')?.value || '').trim(),
   };
 }
@@ -521,17 +525,9 @@ export function buildApiSettingsPanel({
       </p>
 
       <div class="api-grid">
-        <label class="api-field">
+        <label class="api-field api-field--wide">
           <span class="api-field__label">服务商</span>
           <select id="api-provider" class="key-input">${options}</select>
-        </label>
-
-        <label class="api-field">
-          <span class="api-field__label">协议</span>
-          <select id="api-protocol" class="key-input">
-            <option value="openai"${cfg.protocol === 'anthropic' ? '' : ' selected'}>OpenAI 兼容</option>
-            <option value="anthropic"${cfg.protocol === 'anthropic' ? ' selected' : ''}>Anthropic</option>
-          </select>
         </label>
 
         <label class="api-field api-field--wide">

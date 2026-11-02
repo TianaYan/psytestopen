@@ -536,7 +536,7 @@ test('PROVIDER_PRESETS 字段完整，且默认厂商与默认配置一致', () 
     '线上版预设里不应再出现 Anthropic');
 });
 
-test('buildApiSettingsPanel 给出厂商、端点、模型、协议、Key 与操作按钮', () => {
+test('buildApiSettingsPanel 给出厂商、端点、模型、Key 与操作按钮', () => {
   const html = buildApiSettingsPanel({
     cfg: { baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-chat', protocol: 'openai' },
     providerId: 'deepseek',
@@ -545,13 +545,14 @@ test('buildApiSettingsPanel 给出厂商、端点、模型、协议、Key 与操
   assert.match(html, /id="api-provider"/);
   assert.match(html, /id="api-baseurl"/);
   assert.match(html, /id="api-model"/);
-  assert.match(html, /id="api-protocol"/);
   assert.match(html, /id="api-key-input"/);
   assert.match(html, /id="api-save"/);
   assert.match(html, /id="api-test"/);
   assert.match(html, /可直连/);
   assert.match(html, /本机版/, '要提示不支持直连的服务改用本机版');
   assert.match(html, /value="https:\/\/api\.deepseek\.com\/v1"/);
+  assert.ok(!html.includes('api-protocol'), '线上版只说 OpenAI 协议，不再提供协议选择');
+  assert.ok(!/Anthropic/.test(html), 'Anthropic 已从线上版完全移除');
 });
 
 test('buildStartView 直连模式显示当前厂商与模型', () => {
