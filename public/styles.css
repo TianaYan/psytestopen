@@ -306,54 +306,60 @@ p { margin: 0 0 16px; }
   padding: 1px 5px;
 }
 
-/* ---------- 接口设置表单 ---------- */
+/* ---------- 接口设置：单框 + 常用连接串 ---------- */
 
-.api-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 14px;
-  margin-top: 16px;
+.key-input--conn {
+  padding: 14px 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  margin-top: 14px;
 }
 
-@media (max-width: 640px) {
-  .api-grid { grid-template-columns: minmax(0, 1fr); }
-}
-
-.api-field {
+.conn-chips {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 14px 0 4px;
 }
 
-/*
- * 表单框高度。此前 .key-input 上的 flex-basis 在这个纵向 flex 容器里被当成了高度，
- * 撑到 344px；现在显式给高度：86px ≈ 原来的 1/4。
- * 想用常规表单高度（约 40px），把这一行改成 height: 40px 即可。
- */
-.api-field .key-input {
-  flex: 0 0 auto;
-  height: 86px;
-}
-
-.api-field--wide { grid-column: 1 / -1; }
-
-.api-field__label {
+.conn-chips__label {
+  flex: 1 0 100%;
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.1em;
   color: var(--muted);
+  margin-bottom: 2px;
 }
 
-select.key-input {
-  appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
-                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-  background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-  padding-right: 32px;
+.conn-chip {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 7px 12px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
 }
+
+.conn-chip:hover { border-color: var(--ink); background: var(--paper-deep); }
+
+.conn-chip__name { font-weight: 600; }
+
+.conn-chip__meta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.conn-chip--ok .conn-chip__meta { color: #2f6b3a; }
+.conn-chip--bad .conn-chip__meta { color: var(--accent); }
 
 .api-msg {
   margin-top: 12px;

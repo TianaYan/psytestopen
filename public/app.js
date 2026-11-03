@@ -92,6 +92,76 @@ export function corsBadge(cors) {
   return { text: '未实测', tone: 'unknown' };
 }
 
+/** 按主机名找出对应的厂商预设。 */
+export function matchPresetByHost(url) {
+  const host = hostOf(url);
+  if (!host) return null;
+  return PROVIDER_PRESETS.find((p) => p.id !== 'custom' && hostOf(p.baseURL) === host) || null;
+}
+
+/**
+ * 解析统一的连接串输入。三种写法都能认：
+ *   ① `sk-xxx`                              —— 只给 Key，用默认厂商与模型
+ *   ② `https://api.deepseek.com/v1#deepseek-chat` —— 给端点与模型，Key 用已保存的
+ *   ③ `sk-xxx@https://api.deepseek.com/v1#deepseek-chat` —— 三样一起给
+ * 前缀也允许写成 `@端点#模型`，表示"沿用已保存的 Key"。
+ */
+export function parseConnectionString(input, { savedKey = '' } = {}) {
+  const raw = String(input || '').trim();
+  if (!raw) return { ok: false, error: '请填入 API Key，或填端点地址#模型名。' };
+
+  let key = '';
+  let rest = raw;
+
+  if (rest.startsWith('@')) {
+    rest = rest.slice(1).trim();
+  } else {
+    const at = rest.lastIndexOf('@');
+    if (at > 0) {
+      const head = rest.slice(0, at).trim();
+      const tail = rest.slice(at + 1).trim();
+      if (/^https?:\/\//i.test(tail)) {
+        key = head;
+        rest = tail;
+      }
+    }
+  }
+
+  let model = '';
+  const hash = rest.indexOf('#');
+  if (hash !== -1) {
+    model = rest.slice(hash + 1).trim();
+    rest = rest.slice(0, hash).trim();
+  }
+
+  if (!/^https?:\/\//i.test(rest)) {
+    // 只给了一把 Key：走默认连接
+    key = rest || key;
+    rest = '';
+    model = '';
+  }
+
+  if (!key) key = String(savedKey || '').trim();
+  if (!key) {
+    return {
+      ok: false,
+      error: '没有找到 API Key。可以直接粘一把 Key，或把 Key 写在最前面：Key@端点#模型。',
+    };
+  }
+
+  const preset = matchPresetByHost(rest);
+  const baseURL = rest || (preset ? preset.baseURL : DEFAULT_API_CFG.baseURL);
+  const finalModel = model || (preset ? preset.model : DEFAULT_API_CFG.model);
+
+  return {
+    ok: true,
+    apiKey: key,
+    baseURL,
+    model: finalModel,
+    providerId: preset ? preset.id : 'custom',
+  };
+}
+
 const HAS_BROWSER = typeof location !== 'undefined';
 const FORCE_MODE = HAS_BROWSER ? new URLSearchParams(location.search).get('mode') : null;
 const HOSTNAME = HAS_BROWSER ? location.hostname : '';
@@ -167,18 +237,6 @@ function directClient() {
 /* ---------- 接口设置面板的状态与动作 ---------- */
 
 const apiPanelState = { message: null, busy: false };
-
-/** 读取面板上的几个字段。线上版只说 OpenAI 协议。 */
-function readApiPanel() {
-  const q = (selector) => dom.view.querySelector(selector);
-  return {
-    providerId: String(q('#api-provider')?.value || 'custom'),
-    baseURL: String(q('#api-baseurl')?.value || '').trim(),
-    model: String(q('#api-model')?.value || '').trim(),
-    protocol: 'openai',
-    key: String(q('#api-key-input')?.value || '').trim(),
-  };
-}
 
 /**
  * 连通性测试：发一个极小的请求。
@@ -497,20 +555,24 @@ export function buildErrorBanner({ errors = {} } = {}) {
 }
 
 /**
- * 静态部署版的接口设置面板。
+ * 静态部署版的接口设置：一个输入框搞定。
  * 只有 direct 模式（纯静态托管）才需要——那时没有后端替访客保管密钥。
  */
 export function buildApiSettingsPanel({
-  cfg = {}, providerId = '', hasKey = false, message = '', busy = false,
+  cfg = {}, hasKey = false, message = '', busy = false,
 } = {}) {
-  const options = PROVIDER_PRESETS.map((preset) => {
-    const badge = corsBadge(preset.cors);
-    const selected = preset.id === providerId ? ' selected' : '';
-    return `<option value="${esc(preset.id)}"${selected}>${esc(preset.label)} · ${esc(badge.text)}</option>`;
+  const chips = PROVIDER_PRESETS.filter((p) => p.id !== 'custom').map((p) => {
+    const badge = corsBadge(p.cors);
+    const template = p.model ? `${p.baseURL}#${p.model}` : p.baseURL;
+    return `<button type="button" class="conn-chip conn-chip--${esc(badge.tone)}" data-conn="${esc(template)}">
+        <span class="conn-chip__name">${esc(p.label)}</span>
+        <span class="conn-chip__meta">${esc(badge.text)}</span>
+      </button>`;
   }).join('');
 
-  const active = PROVIDER_PRESETS.find((p) => p.id === providerId);
-  const hint = active && active.modelHint ? active.modelHint : '模型名';
+  const current = cfg.baseURL
+    ? `当前连接：${esc(cfg.model || '(未填模型名)')} · ${esc(hostOf(cfg.baseURL))}`
+    : '';
 
   const messageHTML = message
     ? `<p class="small api-msg api-msg--${esc(message.tone || 'info')}">${esc(message.text)}</p>`
@@ -520,36 +582,18 @@ export function buildApiSettingsPanel({
     <div class="key-panel">
       <h2 class="key-panel__title">接哪家的模型？</h2>
       <p class="small">
-        静态部署没有后端，判型请求由<b>你的浏览器</b>直接发往你选的厂商。
-        Key 只保存在这台设备上（浏览器 localStorage）——页面、代码仓库和 GitHub 上都没有密钥。
+        一个框就行，不用区分厂商或模型：
+        <br>· 只填 <code>API Key</code> —— 用默认的 ${esc(DEFAULT_API_CFG.model)}；
+        <br>· 填 <code>端点地址#模型名</code> —— 用这台设备上已保存的 Key；
+        <br>· 填 <code>Key@端点地址#模型名</code> —— 三样一起指定。
       </p>
 
-      <div class="api-grid">
-        <label class="api-field api-field--wide">
-          <span class="api-field__label">服务商</span>
-          <select id="api-provider" class="key-input">${options}</select>
-        </label>
+      <input type="text" id="api-conn" class="key-input key-input--conn" spellcheck="false" autocomplete="off"
+             placeholder="${esc(hasKey
+               ? '已保存一个 Key：填 端点#模型 即可，或重新粘一把 Key'
+               : 'sk-…  或  https://api.deepseek.com/v1#deepseek-chat')}">
 
-        <label class="api-field api-field--wide">
-          <span class="api-field__label">接口地址（到 /v1 为止）</span>
-          <input type="text" id="api-baseurl" class="key-input" spellcheck="false" autocomplete="off"
-                 placeholder="https://api.example.com/v1" value="${esc(cfg.baseURL || '')}">
-        </label>
-
-        <label class="api-field api-field--wide">
-          <span class="api-field__label">模型名</span>
-          <input type="text" id="api-model" class="key-input" spellcheck="false" autocomplete="off"
-                 placeholder="${esc(hint)}" value="${esc(cfg.model || '')}">
-        </label>
-
-        <label class="api-field api-field--wide">
-          <span class="api-field__label">API Key</span>
-          <input type="password" id="api-key-input" class="key-input" autocomplete="off" spellcheck="false"
-                 placeholder="${esc(hasKey ? '已保存一个 Key，可在此处更换' : '粘贴你的 API Key（sk-…）')}">
-        </label>
-      </div>
-
-      <div class="btn-row" style="margin-top:14px">
+      <div class="btn-row" style="margin-top:12px">
         <button type="button" class="btn btn--primary" id="api-save">保存</button>
         <button type="button" class="btn" id="api-test"${busy ? ' disabled' : ''}>${busy ? '正在测试…' : '测试连接'}</button>
         <button type="button" class="btn btn--ghost" id="api-key-clear">清除 Key</button>
@@ -557,10 +601,16 @@ export function buildApiSettingsPanel({
 
       ${messageHTML}
 
+      <p class="small">${current ? `${esc(current)} · ` : ''}Key ${hasKey ? '已保存在这台设备上' : '尚未保存'}</p>
+
+      <div class="conn-chips">
+        <span class="conn-chips__label">常用连接串（点一下填进上面的框）</span>
+        ${chips}
+      </div>
+
       <p class="small">
-        选 <b>自定义 OpenAI 兼容端点</b> 就能接任何 OpenAI 协议的服务——但浏览器能否直连，
-        取决于对方有没有放行跨域。若「测试连接」报的是跨域被拦，说明这个服务不允许网页直连，
-        请改用<b>本机版</b>（<code>npm start</code>）：那时请求由本机服务端发出，不受跨域限制，任意厂商都可以。
+        标「可直连」的服务浏览器能直接调；标「浏览器直连被拒」或「未实测」的，请改用<b>本机版</b>
+        （<code>npm start</code>）——那时请求由本机服务端发出，不受跨域限制，任意厂商都可以。
       </p>
     </div>`;
 }
@@ -1185,56 +1235,50 @@ function renderStart() {
     });
   });
 
-  dom.view.querySelector('#api-provider')?.addEventListener('change', (event) => {
-    const preset = PROVIDER_PRESETS.find((p) => p.id === event.target.value);
-    if (!preset) return;
-    apiPanelState.message = null;
-    saveApiCfg({
-      providerId: preset.id,
-      baseURL: preset.baseURL,
-      model: preset.model,
-      protocol: preset.protocol,
-    });
-    render();
-  });
-
   dom.view.querySelector('#api-save')?.addEventListener('click', () => {
-    const values = readApiPanel();
-    if (!values.key) {
-      apiPanelState.message = { tone: 'bad', text: '请先粘贴一个 API Key。' };
+    const parsed = parseConnectionString(dom.view.querySelector('#api-conn')?.value, {
+      savedKey: loadApiKey(),
+    });
+    if (!parsed.ok) {
+      apiPanelState.message = { tone: 'bad', text: parsed.error };
       render();
       return;
     }
+    saveApiKey(parsed.apiKey);
     saveApiCfg({
-      providerId: values.providerId,
-      baseURL: values.baseURL,
-      model: values.model,
-      protocol: values.protocol,
+      providerId: parsed.providerId,
+      baseURL: parsed.baseURL,
+      model: parsed.model,
+      protocol: 'openai',
     });
-    saveApiKey(values.key);
-    apiPanelState.message = { tone: 'ok', text: '已保存。可以点"测试连接"确认这个端点通不通。' };
+    apiPanelState.message = {
+      tone: 'ok',
+      text: `已保存：${parsed.model} · ${hostOf(parsed.baseURL)}。可以点"测试连接"确认这个端点通不通。`,
+    };
     render();
   });
 
   dom.view.querySelector('#api-test')?.addEventListener('click', async () => {
-    const values = readApiPanel();
-    if (!values.key) {
-      apiPanelState.message = { tone: 'bad', text: '先填 API Key 再测。' };
+    const parsed = parseConnectionString(dom.view.querySelector('#api-conn')?.value, {
+      savedKey: loadApiKey(),
+    });
+    if (!parsed.ok) {
+      apiPanelState.message = { tone: 'bad', text: parsed.error };
       render();
       return;
     }
+    saveApiKey(parsed.apiKey);
     saveApiCfg({
-      providerId: values.providerId,
-      baseURL: values.baseURL,
-      model: values.model,
-      protocol: values.protocol,
+      providerId: parsed.providerId,
+      baseURL: parsed.baseURL,
+      model: parsed.model,
+      protocol: 'openai',
     });
-    saveApiKey(values.key);
     apiPanelState.busy = true;
     apiPanelState.message = null;
     render();
 
-    apiPanelState.message = await testConnection(values);
+    apiPanelState.message = await testConnection(parsed);
     apiPanelState.busy = false;
     render();
   });
@@ -1243,6 +1287,18 @@ function renderStart() {
     saveApiKey('');
     apiPanelState.message = { tone: 'info', text: '已清除这台设备上保存的 Key。' };
     render();
+  });
+
+  dom.view.querySelectorAll('[data-conn]').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const input = dom.view.querySelector('#api-conn');
+      if (!input) return;
+      input.value = chip.dataset.conn || '';
+      input.focus();
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
+      apiPanelState.message = null;
+    });
   });
 
   dom.view.querySelector('#start-btn')?.addEventListener('click', () => {

@@ -22,6 +22,7 @@ import {
   coverageLine,
   PROVIDER_PRESETS,
   buildApiSettingsPanel,
+  parseConnectionString,
   state,
   esc,
 } from '../public/app.js';
@@ -536,23 +537,70 @@ test('PROVIDER_PRESETS 字段完整，且默认厂商与默认配置一致', () 
     '线上版预设里不应再出现 Anthropic');
 });
 
-test('buildApiSettingsPanel 给出厂商、端点、模型、Key 与操作按钮', () => {
+test('buildApiSettingsPanel 只留一个输入框，并给出常用连接串', () => {
   const html = buildApiSettingsPanel({
     cfg: { baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-chat', protocol: 'openai' },
     providerId: 'deepseek',
     hasKey: false,
   });
-  assert.match(html, /id="api-provider"/);
-  assert.match(html, /id="api-baseurl"/);
-  assert.match(html, /id="api-model"/);
-  assert.match(html, /id="api-key-input"/);
+  assert.match(html, /id="api-conn"/, '应当只有一个输入框');
   assert.match(html, /id="api-save"/);
   assert.match(html, /id="api-test"/);
+  assert.match(html, /id="api-key-clear"/);
   assert.match(html, /可直连/);
   assert.match(html, /本机版/, '要提示不支持直连的服务改用本机版');
-  assert.match(html, /value="https:\/\/api\.deepseek\.com\/v1"/);
-  assert.ok(!html.includes('api-protocol'), '线上版只说 OpenAI 协议，不再提供协议选择');
+  // 常用连接串：每个厂商一块，点一下就填进框里
+  assert.match(html, /data-conn="https:\/\/api\.deepseek\.com\/v1#deepseek-chat"/);
+  assert.match(html, /data-conn="https:\/\/api\.minimaxi\.com\/v1#MiniMax-M2\.7"/);
+  assert.ok(!html.includes('id="api-provider"'), '不应再有服务商下拉');
+  assert.ok(!html.includes('id="api-baseurl"'), '不应再有单独的端点输入框');
+  assert.ok(!html.includes('id="api-model"'), '不应再有单独的模型输入框');
   assert.ok(!/Anthropic/.test(html), 'Anthropic 已从线上版完全移除');
+});
+
+test('parseConnectionString 三种写法都能认', () => {
+  // ① 只给 Key：走默认厂商与模型
+  const onlyKey = parseConnectionString('sk-abc123');
+  assert.equal(onlyKey.ok, true);
+  assert.equal(onlyKey.apiKey, 'sk-abc123');
+  assert.equal(onlyKey.baseURL, 'https://api.minimaxi.com/v1');
+  assert.equal(onlyKey.model, 'MiniMax-M2.7');
+
+  // ② 端点#模型：Key 用已保存的
+  const endpointOnly = parseConnectionString('https://api.deepseek.com/v1#deepseek-chat', {
+    savedKey: 'sk-saved',
+  });
+  assert.equal(endpointOnly.ok, true);
+  assert.equal(endpointOnly.apiKey, 'sk-saved');
+  assert.equal(endpointOnly.baseURL, 'https://api.deepseek.com/v1');
+  assert.equal(endpointOnly.model, 'deepseek-chat');
+  assert.equal(endpointOnly.providerId, 'deepseek');
+
+  // ③ Key@端点#模型：三样一起给
+  const full = parseConnectionString('sk-new@https://api.deepseek.com/v1#deepseek-chat');
+  assert.equal(full.ok, true);
+  assert.equal(full.apiKey, 'sk-new');
+  assert.equal(full.baseURL, 'https://api.deepseek.com/v1');
+  assert.equal(full.model, 'deepseek-chat');
+
+  // 前缀 @ 表示"沿用已保存的 Key"
+  const atPrefix = parseConnectionString('@https://api.deepseek.com/v1#deepseek-chat', {
+    savedKey: 'sk-saved',
+  });
+  assert.equal(atPrefix.ok, true);
+  assert.equal(atPrefix.apiKey, 'sk-saved');
+
+  // 端点已知但没写模型时，按厂商补默认模型
+  const noModel = parseConnectionString('https://api.deepseek.com/v1', { savedKey: 'sk-saved' });
+  assert.equal(noModel.ok, true);
+  assert.equal(noModel.model, 'deepseek-chat');
+  assert.equal(noModel.baseURL, 'https://api.deepseek.com/v1');
+
+  // 什么都没有 / 没有 Key
+  assert.equal(parseConnectionString('').ok, false);
+  const noKey = parseConnectionString('https://api.deepseek.com/v1#deepseek-chat');
+  assert.equal(noKey.ok, false);
+  assert.match(noKey.error, /API Key/);
 });
 
 test('buildStartView 直连模式显示当前厂商与模型', () => {
