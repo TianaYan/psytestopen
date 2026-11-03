@@ -169,7 +169,13 @@ function validateScoreRequest(body, items) {
  */
 export function createServer({ config, llm, items } = {}) {
   const cfg = config ?? loadConfig();
-  const client = llm ?? createLlmClient(cfg);
+  // 延迟创建客户端：没有凭证时也要能把服务起起来，
+  // 让用户能在界面上看到原因、改接本机推理服务，而不是直接崩在启动上。
+  let clientInstance = llm || null;
+  const getClient = () => {
+    if (!clientInstance) clientInstance = createLlmClient(cfg);
+    return clientInstance;
+  };
   const bank = items ?? loadItems();
   const enqueue = createQueues();
 
@@ -204,7 +210,13 @@ export function createServer({ config, llm, items } = {}) {
           );
 
           const result = await enqueue(`score:${dimension}`, () =>
-            scoreDimension({ dimension, answers, skipped, items: bank.items, client }));
+            scoreDimension({
+              dimension,
+              answers,
+              skipped,
+              items: bank.items,
+              call: (msg) => getClient().call(msg),
+            }));
 
           sendJson(res, 200, result);
           return;
@@ -222,7 +234,7 @@ export function createServer({ config, llm, items } = {}) {
         const result = await enqueue('finalize', async () => {
           const validated = await finalizeReport({
             dimensionResults,
-            client,
+            call: (msg) => getClient().call(msg),
             onNote: (message) => console.log(`[mbti-open] ${message}`),
           });
           // 报告里要写明是谁判的型：换了厂商/模型，口径未必一样。

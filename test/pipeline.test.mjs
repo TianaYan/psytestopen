@@ -65,7 +65,7 @@ test('scoreDimension 走完模型调用并校验引文', async () => {
     dimension: 'E/I',
     answers: EI_ANSWERS,
     items: EI_ITEMS,
-    client,
+    call: (msg) => client.call(msg),
   });
 
   assert.equal(client.calls.length, 1, '只应调用一次模型');
@@ -105,7 +105,7 @@ test('finalizeReport 按逐维倾向拼出类型，不采信模型写错的 type
     { dimension: 'J/P', lean: 'J', score: 0.3, evidence: [], counterEvidence: [] },
   ];
 
-  const result = await finalizeReport({ dimensionResults, client, onNote: (m) => notes.push(m) });
+  const result = await finalizeReport({ dimensionResults, call: (msg) => client.call(msg), onNote: (m) => notes.push(m) });
 
   assert.equal(result.type, 'ENTJ');
   assert.deepEqual(result.typeLetters, ['E', 'N', 'T', 'J']);
@@ -137,7 +137,7 @@ test('finalizeReport 小传不合格时重试一次，仍不合格则降级', as
     { dimension: 'E/I', lean: 'I', score: 0.8, evidence: [{ itemId: 'EI-03', quote: '我更想谁也别见', signal: '', strength: 'strong' }], counterEvidence: [] },
   ];
 
-  const result = await finalizeReport({ dimensionResults, client, onNote: (m) => notes.push(m) });
+  const result = await finalizeReport({ dimensionResults, call: (msg) => client.call(msg), onNote: (m) => notes.push(m) });
 
   assert.equal(client.calls.length, 2, '首轮不合格应重试一次');
   assert.equal(result.biography.degraded, true, '仍不合格就降级为只拼原话');
@@ -193,7 +193,7 @@ test('scoreDimension 把跳过的题记入证据缺口并记录作答条数', as
     ],
     items: EI_ITEMS,
     skipped: ['EI-01'],
-    client,
+    call: (msg) => client.call(msg),
   });
 
   assert.equal(result.answeredCount, 1);

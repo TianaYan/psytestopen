@@ -22,6 +22,8 @@ import {
   coverageLine,
   PROVIDER_PRESETS,
   buildApiSettingsPanel,
+  buildProxyPanel,
+  buildClientCfg,
   parseConnectionString,
   state,
   esc,
@@ -522,10 +524,10 @@ test('PROVIDER_PRESETS 字段完整，且默认厂商与默认配置一致', () 
     assert.ok(!ids.has(preset.id), `id 重复：${preset.id}`);
     ids.add(preset.id);
     assert.ok(preset.label, `${preset.id} 缺少名称`);
-    assert.ok(['ok', 'blocked', 'unknown'].includes(preset.cors), `${preset.id} 的 cors 标记非法`);
+    assert.ok(['ok', 'local', 'blocked', 'unknown'].includes(preset.cors), `${preset.id} 的 cors 标记非法`);
     assert.ok(['openai', 'anthropic'].includes(preset.protocol), `${preset.id} 的协议非法`);
     if (preset.id !== 'custom') {
-      assert.match(preset.baseURL, /^https:\/\//, `${preset.id} 的端点应为 https`);
+      assert.match(preset.baseURL, /^https?:\/\//, `${preset.id} 的端点应为 http(s) 地址`);
     }
   }
   const mini = PROVIDER_PRESETS.find((p) => p.id === 'minimax');
@@ -535,6 +537,30 @@ test('PROVIDER_PRESETS 字段完整，且默认厂商与默认配置一致', () 
   // 浏览器直连被 Anthropic 拒绝，不放进线上版的可选列表
   assert.ok(!PROVIDER_PRESETS.some((p) => /anthropic|claude/i.test(p.id + p.label + p.baseURL)),
     '线上版预设里不应再出现 Anthropic');
+
+  // 本机推理服务：不需要 Key
+  const ollama = PROVIDER_PRESETS.find((p) => p.id === 'ollama');
+  assert.ok(ollama, '应提供本机推理服务的预设');
+  assert.equal(ollama.cors, 'local');
+  assert.match(ollama.baseURL, /^http:\/\/localhost:/);
+});
+
+test('buildClientCfg 正确映射连接串解析结果', () => {
+  const parsed = parseConnectionString('sk-abc@https://api.deepseek.com/v1#deepseek-chat');
+  const cfg = buildClientCfg(parsed);
+  assert.equal(cfg.apiKey, 'sk-abc');
+  assert.equal(cfg.baseURL, 'https://api.deepseek.com/v1');
+  assert.equal(cfg.model, 'deepseek-chat');
+  assert.equal(cfg.protocol, 'openai');
+  assert.equal(cfg.keyConfigured, true);
+});
+
+test('buildProxyPanel 说明不需要填 Key', () => {
+  const html = buildProxyPanel({ model: 'MiniMax-M2.7', host: 'psytest-proxy.workers.dev' });
+  assert.match(html, /模型由本站提供/);
+  assert.match(html, /不需要你填 API Key/);
+  assert.match(html, /MiniMax-M2\.7/);
+  assert.match(html, /psytest-proxy\.workers\.dev/);
 });
 
 test('buildApiSettingsPanel 只留一个输入框，并给出常用连接串', () => {
@@ -601,6 +627,13 @@ test('parseConnectionString 三种写法都能认', () => {
   const noKey = parseConnectionString('https://api.deepseek.com/v1#deepseek-chat');
   assert.equal(noKey.ok, false);
   assert.match(noKey.error, /API Key/);
+
+  // 本机推理服务不需要 Key
+  const local = parseConnectionString('http://localhost:11434/v1#qwen2.5:7b');
+  assert.equal(local.ok, true, '本机推理服务应当允许不填 Key');
+  assert.equal(local.apiKey, '');
+  assert.equal(local.baseURL, 'http://localhost:11434/v1');
+  assert.equal(local.model, 'qwen2.5:7b');
 });
 
 test('buildStartView 直连模式显示当前厂商与模型', () => {

@@ -14,7 +14,7 @@
  */
 
 import { scoreDimension, finalizeReport } from './lib/pipeline.js';
-import { createLlmClient } from './lib/llm.js';
+import { createLlmClient, extractJson, isLocalEndpoint } from './lib/llm.js';
 
 const DRAFT_KEY = 'mbti-open-draft';
 const KEY_STORE = 'mbti-open-api-key';
@@ -80,6 +80,11 @@ export const PROVIDER_PRESETS = [
     modelHint: '如 ernie-4.0-8k', protocol: 'openai',
   },
   {
+    id: 'ollama', label: '本机推理（Ollama / LM Studio）', cors: 'local',
+    baseURL: 'http://localhost:11434/v1', model: '',
+    modelHint: '模型名，如 qwen2.5:7b（用 ollama list 查）', protocol: 'openai',
+  },
+  {
     id: 'custom', label: '自定义 OpenAI 兼容端点', cors: 'unknown',
     baseURL: '', model: '', modelHint: '填你的 /v1 根地址', protocol: 'openai',
   },
@@ -88,6 +93,7 @@ export const PROVIDER_PRESETS = [
 /** 预设的跨域标记 → 给人看的一句话。 */
 export function corsBadge(cors) {
   if (cors === 'ok') return { text: '可直连', tone: 'ok' };
+  if (cors === 'local') return { text: '本机·免 Key', tone: 'local' };
   if (cors === 'blocked') return { text: '浏览器直连被拒', tone: 'bad' };
   return { text: '未实测', tone: 'unknown' };
 }
@@ -142,7 +148,8 @@ export function parseConnectionString(input, { savedKey = '' } = {}) {
   }
 
   if (!key) key = String(savedKey || '').trim();
-  if (!key) {
+  // 本机推理服务（Ollama / LM Studio）不需要 Key，其他端点则必须有。
+  if (!key && !isLocalEndpoint(rest)) {
     return {
       ok: false,
       error: '没有找到 API Key。可以直接粘一把 Key，或把 Key 写在最前面：Key@端点#模型。',
@@ -165,6 +172,15 @@ export function parseConnectionString(input, { savedKey = '' } = {}) {
 const HAS_BROWSER = typeof location !== 'undefined';
 const FORCE_MODE = HAS_BROWSER ? new URLSearchParams(location.search).get('mode') : null;
 const HOSTNAME = HAS_BROWSER ? location.hostname : '';
+
+/**
+ * 站点级部署配置（public/config.js）。
+ * 填了 proxyBase 就表示"密钥由站点提供"，访客不用填 Key。
+ */
+const DEPLOY_CONFIG = (typeof window !== 'undefined' && window.PSYTEST_CONFIG) || {};
+const PROXY_BASE = String(DEPLOY_CONFIG.proxyBase || '').trim().replace(/\/+$/, '');
+/** 代理那边的模型信息，启动时拉一次。 */
+let proxyInfo = null;
 
 /**
  * 是否走"浏览器直连 API"的静态模式。
@@ -228,15 +244,66 @@ function saveApiKey(value) {
 function directClient() {
   const key = loadApiKey();
   if (!key) {
-    throw new Error('还没有填写 API Key。静态部署版需要你自己的 API Key。');
+    throw new Error('还没有填写 API Key。静态部署版需要你自己的 MiniMax API Key。');
   }
   const cfg = { ...loadApiCfg(), apiKey: key, keyConfigured: true };
   return createLlmClient(cfg);
 }
 
+/**
+ * 当前这一份连接从哪来：
+ *  - 框里填了东西 → 按连接串解析；
+ *  - 框是空的（刷新后常态）→ 用这台设备上已保存的 Key 与配置。
+ */
+function currentConnection() {
+  const raw = String(dom.view.querySelector('#api-conn')?.value || '').trim();
+  if (raw) return parseConnectionString(raw, { savedKey: loadApiKey() });
+
+  const cfg = loadApiCfg();
+  const key = loadApiKey();
+  if (!key) return { ok: false, error: '还没有保存过 API Key。填一把，或把连接串粘进上面的框。' };
+  return {
+    ok: true,
+    apiKey: key,
+    baseURL: cfg.baseURL,
+    model: cfg.model,
+    providerId: cfg.providerId,
+  };
+}
+
+/**
+ * 模型调用的入口：站点配了代理就走代理（密钥在代理里），否则用访客自己的 Key 直连。
+ * 两条路返回的都是"模型输出的 JSON 对象"，后面的校验逻辑完全一样。
+ */
+function modelCall() {
+  if (PROXY_BASE) return proxyCall;
+  return (msg) => directClient().call(msg);
+}
+
+/** 通过代理调用模型：提示词由浏览器拼好，代理只加密钥转发。 */
+async function proxyCall({ system, user, temperature, maxTokens }) {
+  const res = await postJSON(`${PROXY_BASE}/api/model`, { system, user, temperature, maxTokens });
+  return extractJson(res.content);
+}
+
 /* ---------- 接口设置面板的状态与动作 ---------- */
 
 const apiPanelState = { message: null, busy: false };
+
+/**
+ * 把连接串解析结果转成模型客户端需要的配置。
+ * 单独抽出来是为了能离线断言字段映射——这里曾经因为 key/apiKey 写错而
+ * 带着 undefined 的密钥去请求，白白报成"连不上"。
+ */
+export function buildClientCfg(values = {}) {
+  return {
+    baseURL: values.baseURL || '',
+    model: values.model || '',
+    protocol: values.protocol || 'openai',
+    apiKey: values.apiKey ?? values.key ?? '',
+    keyConfigured: true,
+  };
+}
 
 /**
  * 连通性测试：发一个极小的请求。
@@ -245,13 +312,7 @@ const apiPanelState = { message: null, busy: false };
  */
 export async function testConnection(values) {
   try {
-    const client = createLlmClient({
-      baseURL: values.baseURL,
-      model: values.model,
-      protocol: values.protocol,
-      apiKey: values.key,
-      keyConfigured: true,
-    });
+    const client = createLlmClient(buildClientCfg(values));
     const { content } = await client.rawCall({
       system: '按要求原样回复，不要多说。',
       user: '回复：收到',
@@ -476,8 +537,8 @@ export function bindRestart(button) {
 /* ---------- API ---------- */
 
 /**
- * 单维判型。local 模式走同源服务端；direct 模式由浏览器直连 API。
- * 两条路径调用的是同一份 public/lib/pipeline.js，结果口径一致。
+ * 单维判型。local 模式走同源服务端；direct 模式由浏览器直连 API 或代理。
+ * 三条路径调用的是同一份 public/lib/pipeline.js，结果口径一致。
  */
 async function requestScore(dimension, answers, skipped = []) {
   if (IS_DIRECT) {
@@ -486,22 +547,23 @@ async function requestScore(dimension, answers, skipped = []) {
       answers,
       skipped,
       items: itemsOf(dimension),
-      client: directClient(),
+      call: modelCall(),
     });
   }
   return postJSON('api/score', { dimension, answers, skipped });
 }
 
-/** 合成最终画像。同样两种路径。 */
+/** 合成最终画像。同样三种路径。 */
 async function requestFinalize(dimensionResults) {
   if (IS_DIRECT) {
-    const cfg = loadApiCfg();
     const result = await finalizeReport({
       dimensionResults,
-      client: directClient(),
+      call: modelCall(),
       onNote: (message) => console.info('[mbti-open]', message),
     });
-    result.meta = { model: cfg.model, endpointHost: hostOf(cfg.baseURL), protocol: cfg.protocol };
+    result.meta = PROXY_BASE
+      ? { model: proxyInfo?.model || '', endpointHost: hostOf(PROXY_BASE) }
+      : { model: loadApiCfg().model, endpointHost: hostOf(loadApiCfg().baseURL) };
     return result;
   }
   return postJSON('api/finalize', { dimensionResults });
@@ -552,6 +614,25 @@ export function buildErrorBanner({ errors = {} } = {}) {
         <button type="button" class="btn btn--sm" data-retry-dim="${esc(dimension)}">重试评判</button>
       </div>`).join('')}
   </div>`;
+}
+
+/**
+ * 站点已配置模型时的提示面板（走代理部署）。
+ * 这种情况下访客不需要填 Key。
+ */
+export function buildProxyPanel({ model = '', host = '' } = {}) {
+  return `
+    <div class="key-panel">
+      <h2 class="key-panel__title">模型由本站提供</h2>
+      <p class="small">
+        这个部署已经配好模型${model ? `（<b>${esc(model)}</b>${host ? ` · ${esc(host)}` : ''}）` : ''}，
+        <b>不需要你填 API Key</b>——密钥存在站点自己的代理里，页面和代码仓库里都没有它。
+      </p>
+      <p class="small">
+        每次测评有每日次数上限（按 IP 计）。想用自己的 Key 或换模型，见仓库 README 里的
+        <b>自带密钥部署</b> 与 <b>换厂商</b> 两节。
+      </p>
+    </div>`;
 }
 
 /**
@@ -623,8 +704,9 @@ export function buildStartView({
     ? `<span class="small">静态直连模式 · ${esc(apiCfg?.model || '未指定模型')} · `
       + `${esc(hostOf(apiCfg?.baseURL) || '未指定端点')} · 密钥只存在你的浏览器里</span>`
     : itemHealth
-      ? (itemHealth.keyConfigured
-        ? `<span class="small">服务已就绪 · 模型 ${esc(itemHealth.model)} · 端点 ${esc(itemHealth.endpointHost)}</span>`
+      ? (itemHealth.keyConfigured || itemHealth.keyOptional
+        ? `<span class="small">服务已就绪 · 模型 ${esc(itemHealth.model)} · 端点 ${esc(itemHealth.endpointHost)}`
+          + `${itemHealth.keyOptional ? '（本地推理，无需 Key）' : ''}</span>`
         : `<span class="small" style="color:var(--warn-ink)">服务未找到可用凭证，判型会失败：${esc(itemHealth.model || '模型未配置')}</span>`)
       : '<span class="small">正在检查服务状态…</span>';
 
@@ -1199,15 +1281,21 @@ function bindRetryButtons() {
 }
 
 function renderStart() {
-  const apiCfg = loadApiCfg();
+  const savedCfg = loadApiCfg();
+  // 走代理部署时，界面上要显示的是代理那边的模型，不是本地那份默认配置。
+  const apiCfg = PROXY_BASE
+    ? { ...savedCfg, model: proxyInfo?.model || '（由代理提供）', baseURL: PROXY_BASE }
+    : savedCfg;
   const keyPanel = IS_DIRECT
-    ? buildApiSettingsPanel({
-      cfg: apiCfg,
-      providerId: apiCfg.providerId || 'minimax',
-      hasKey: Boolean(loadApiKey()),
-      message: apiPanelState.message,
-      busy: apiPanelState.busy,
-    })
+    ? (PROXY_BASE
+      ? buildProxyPanel({ model: proxyInfo?.model || '', host: hostOf(PROXY_BASE) })
+      : buildApiSettingsPanel({
+        cfg: savedCfg,
+        providerId: savedCfg.providerId || 'minimax',
+        hasKey: Boolean(loadApiKey()),
+        message: apiPanelState.message,
+        busy: apiPanelState.busy,
+      }))
     : '';
   dom.view.innerHTML = buildStartView({
     bank,
@@ -1236,9 +1324,7 @@ function renderStart() {
   });
 
   dom.view.querySelector('#api-save')?.addEventListener('click', () => {
-    const parsed = parseConnectionString(dom.view.querySelector('#api-conn')?.value, {
-      savedKey: loadApiKey(),
-    });
+    const parsed = currentConnection();
     if (!parsed.ok) {
       apiPanelState.message = { tone: 'bad', text: parsed.error };
       render();
@@ -1259,9 +1345,7 @@ function renderStart() {
   });
 
   dom.view.querySelector('#api-test')?.addEventListener('click', async () => {
-    const parsed = parseConnectionString(dom.view.querySelector('#api-conn')?.value, {
-      savedKey: loadApiKey(),
-    });
+    const parsed = currentConnection();
     if (!parsed.ok) {
       apiPanelState.message = { tone: 'bad', text: parsed.error };
       render();
@@ -1302,7 +1386,7 @@ function renderStart() {
   });
 
   dom.view.querySelector('#start-btn')?.addEventListener('click', () => {
-    if (IS_DIRECT && !loadApiKey()) {
+    if (IS_DIRECT && !PROXY_BASE && !loadApiKey()) {
       state.error = '静态部署版需要你自己的 API Key：先在上面填一个，再开始作答。';
       render();
       return;
@@ -1510,6 +1594,17 @@ async function boot() {
   } catch (err) {
     console.warn('初始化失败', err);
   }
+
+  // 走代理部署时，拉一下代理那边的模型信息（顺便探活）。
+  if (PROXY_BASE) {
+    try {
+      const res = await fetch(`${PROXY_BASE}/api/health`);
+      if (res.ok) proxyInfo = await res.json();
+    } catch (err) {
+      console.warn('代理暂时连不上', err);
+    }
+  }
+
   loadDraft();
   normalizeState();
 

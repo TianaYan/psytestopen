@@ -1,0 +1,24 @@
+# 线上版模型代理（Cloudflare Worker）配置
+#
+# 部署步骤见 worker/README.md。
+# 注意：密钥**不要**写进这个文件，用 `npx wrangler secret put MODEL_API_KEY` 单独设置。
+
+name = "psytest-proxy"
+main = "psytest-proxy.js"
+compatibility_date = "2026-01-01"
+
+# 允许访问代理的站点来源，逗号分隔。填 GitHub Pages 的域名。
+ALLOWED_ORIGINS = "https://tianayan.github.io"
+
+# 模型与上游端点（不是密钥，密钥走 secret）
+MODEL = "MiniMax-M2.7"
+UPSTREAM_BASE = "https://api.minimaxi.com/v1"
+
+# 每个 IP 每天允许的模型调用次数（一次完整测评约 5 次）
+DAILY_LIMIT = "60"
+
+# 限流用的 KV 命名空间。创建后把 id 填进来：
+#   npx wrangler kv namespace create PSYTEST_QUOTA
+# [[kv_namespaces]]
+# binding = "QUOTA"
+# id = "<把这里换成刚创建出来的 id>"

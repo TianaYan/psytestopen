@@ -79,6 +79,24 @@ export function extractJson(text) {
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * 端点是不是"自己机器上的"服务。
+ * 本机推理服务（Ollama / LM Studio）不需要 API Key，远程端点则必须带。
+ */
+export function isLocalEndpoint(baseURL) {
+  let host = '';
+  try {
+    host = new URL(String(baseURL || '')).hostname;
+  } catch {
+    return false;
+  }
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
+  // 局域网里的自建网关
+  if (/^192\.168\./.test(host) || /^10\./.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+  return false;
+}
+
+/**
  * @param {object} cfg loadConfig() 的返回值
  * @param {object} [opts]
  */
@@ -87,9 +105,12 @@ export function createLlmClient(cfg, {
   timeoutMs = 90_000,
   sleep = defaultSleep,
 } = {}) {
-  if (!cfg.keyConfigured) {
+  const localEndpoint = isLocalEndpoint(cfg.baseURL);
+  // 本机推理服务不需要 Key；远程端点没有 Key 就没法用。
+  if (!cfg.apiKey && !localEndpoint) {
     throw new Error(
-      '未找到可用凭证：请设置 MBTI_API_KEY，或在项目根目录提供 .env.local，或确保本机存在可用的 MiniMax 配置文件。',
+      '未找到可用凭证：请设置 MBTI_API_KEY，或提供 .env.local，'
+      + '或改用本机推理服务（Ollama / LM Studio，地址为 http://localhost:11434/v1）。',
     );
   }
   if (!cfg.baseURL) {
@@ -106,6 +127,9 @@ export function createLlmClient(cfg, {
     let body;
 
     if (protocol === 'anthropic') {
+      if (!cfg.apiKey) {
+        throw new LlmError('Anthropic 协议必须提供 API Key。');
+      }
       url = `${cfg.baseURL}/messages`;
       headers = {
         'content-type': 'application/json',
@@ -125,10 +149,9 @@ export function createLlmClient(cfg, {
       if (typeof temperature === 'number') body.temperature = temperature;
     } else {
       url = `${cfg.baseURL}/chat/completions`;
-      headers = {
-        'content-type': 'application/json',
-        authorization: `Bearer ${cfg.apiKey}`,
-      };
+      headers = { 'content-type': 'application/json' };
+      // 本机推理服务不需要 Key，带了反而可能被拒。
+      if (cfg.apiKey) headers.authorization = `Bearer ${cfg.apiKey}`;
       body = {
         model: cfg.model,
         max_tokens: maxTokens,
