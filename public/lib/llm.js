@@ -79,24 +79,6 @@ export function extractJson(text) {
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * 端点是不是"自己机器上的"服务。
- * 本机推理服务（Ollama / LM Studio）不需要 API Key，远程端点则必须带。
- */
-export function isLocalEndpoint(baseURL) {
-  let host = '';
-  try {
-    host = new URL(String(baseURL || '')).hostname;
-  } catch {
-    return false;
-  }
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
-  // 局域网里的自建网关
-  if (/^192\.168\./.test(host) || /^10\./.test(host)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
-  return false;
-}
-
-/**
  * @param {object} cfg loadConfig() 的返回值
  * @param {object} [opts]
  */
@@ -105,12 +87,9 @@ export function createLlmClient(cfg, {
   timeoutMs = 90_000,
   sleep = defaultSleep,
 } = {}) {
-  const localEndpoint = isLocalEndpoint(cfg.baseURL);
-  // 本机推理服务不需要 Key；远程端点没有 Key 就没法用。
-  if (!cfg.apiKey && !localEndpoint) {
+  if (!cfg.keyConfigured) {
     throw new Error(
-      '未找到可用凭证：请设置 MBTI_API_KEY，或提供 .env.local，'
-      + '或改用本机推理服务（Ollama / LM Studio，地址为 http://localhost:11434/v1）。',
+      '未找到可用凭证：请设置 MBTI_API_KEY，或在项目根目录提供 .env.local，或确保本机存在可用的 MiniMax 配置文件。',
     );
   }
   if (!cfg.baseURL) {
@@ -127,19 +106,12 @@ export function createLlmClient(cfg, {
     let body;
 
     if (protocol === 'anthropic') {
-      if (!cfg.apiKey) {
-        throw new LlmError('Anthropic 协议必须提供 API Key。');
-      }
       url = `${cfg.baseURL}/messages`;
       headers = {
         'content-type': 'application/json',
         'x-api-key': cfg.apiKey,
         'anthropic-version': '2023-06-01',
       };
-      // 浏览器直连 Anthropic 时必须显式声明，否则预检就被拒。
-      if (typeof window !== 'undefined') {
-        headers['anthropic-dangerous-direct-browser-access'] = 'true';
-      }
       body = {
         model: cfg.model,
         max_tokens: maxTokens,
@@ -149,9 +121,10 @@ export function createLlmClient(cfg, {
       if (typeof temperature === 'number') body.temperature = temperature;
     } else {
       url = `${cfg.baseURL}/chat/completions`;
-      headers = { 'content-type': 'application/json' };
-      // 本机推理服务不需要 Key，带了反而可能被拒。
-      if (cfg.apiKey) headers.authorization = `Bearer ${cfg.apiKey}`;
+      headers = {
+        'content-type': 'application/json',
+        authorization: `Bearer ${cfg.apiKey}`,
+      };
       body = {
         model: cfg.model,
         max_tokens: maxTokens,
@@ -162,13 +135,6 @@ export function createLlmClient(cfg, {
       };
       if (typeof temperature === 'number') body.temperature = temperature;
       if (useJsonFormat) body.response_format = { type: 'json_object' };
-    }
-
-    // 自建网关/代理可能要求额外请求头。
-    if (cfg.headers && typeof cfg.headers === 'object') {
-      for (const [name, value] of Object.entries(cfg.headers)) {
-        if (name && value != null) headers[name] = String(value);
-      }
     }
 
     const controller = new AbortController();
@@ -192,14 +158,6 @@ export function createLlmClient(cfg, {
     const raw = await response.text();
 
     if (!response.ok) {
-      // 新一些的推理模型不再接受 max_tokens，要改用 max_completion_tokens。
-      // 换个字段名重试一次，省得用户为了这个去改代码。
-      if (response.status === 400 && protocol !== 'anthropic'
-        && raw.includes('max_tokens') && !raw.includes('max_completion_tokens')) {
-        body.max_completion_tokens = body.max_tokens;
-        delete body.max_tokens;
-        return rawCall({ system, user, temperature, maxTokens, useJsonFormat: false });
-      }
       throw new LlmError(`上游返回 HTTP ${response.status}`, {
         status: response.status,
         retryable: response.status === 429 || response.status >= 500,
@@ -252,25 +210,10 @@ export function createLlmClient(cfg, {
         try {
           return extractJson(content);
         } catch {
-          // 模型没给出可解析的 JSON（常见于较小的模型）。
-          // 明确要求一次"只输出 JSON"，比原样重试有用得多。
-          const retry = await rawCall({
-            system: `${system}\n\n`
-              + '【再次输出】你上一次的输出无法被解析为 JSON。'
-              + '请只输出一个 JSON 对象，不要任何解释文字、不要 markdown 代码块。',
-            user,
-            temperature: 0,
-            maxTokens,
-            useJsonFormat: false,
+          throw new LlmError('模型输出不是可解析的 JSON。', {
+            retryable: true,
+            snippet: redact(content, cfg.apiKey).slice(0, 600),
           });
-          try {
-            return extractJson(retry.content);
-          } catch {
-            throw new LlmError('模型输出不是可解析的 JSON。', {
-              retryable: true,
-              snippet: redact(content, cfg.apiKey).slice(0, 600),
-            });
-          }
         }
       } catch (err) {
         lastError = err;

@@ -31,13 +31,12 @@ export function polesByDimension() {
  * @param {Array<{itemId:string,text:string}>} params.answers 本次问到的全部题目；跳过的题 text 为空
  * @param {Array<string>} [params.skipped] 受测者主动跳过的题号
  * @param {Array} params.items 本维度题库
- * @param {(msg:{system:string,user:string,temperature:number,maxTokens:number})=>Promise<object>} params.call
- *        模型调用入口。本机服务端、浏览器直连、代理转发，用的是同一个签名。
+ * @param {{call:Function}} params.client
  */
-export async function scoreDimension({ dimension, answers, items, skipped = [], call }) {
+export async function scoreDimension({ dimension, answers, items, skipped = [], client }) {
   const skippedIds = Array.isArray(skipped) ? skipped.map(String) : [];
   const { system, user } = buildScoreMessages({ dimension, items, answers, skipped: skippedIds });
-  const raw = await call({ system, user, temperature: 0.2, maxTokens: 3000 });
+  const raw = await client.call({ system, user, temperature: 0.2, maxTokens: 3000 });
   const poles = DIMENSION_ORDER.find((d) => d.key === dimension)?.poles || [];
   const result = validateScore(raw, answers, { poles });
 
@@ -57,13 +56,13 @@ export async function scoreDimension({ dimension, answers, items, skipped = [], 
  *
  * @param {object} params
  * @param {Array} params.dimensionResults 四维判型结果
- * @param {(msg:{system:string,user:string,temperature:number,maxTokens:number})=>Promise<object>} params.call
+ * @param {{call:Function}} params.client
  * @param {(message:string)=>void} [params.onNote] 过程提示（服务端写日志，浏览器写控制台）
  */
-export async function finalizeReport({ dimensionResults, call, onNote = () => {} }) {
+export async function finalizeReport({ dimensionResults, client, onNote = () => {} }) {
   const poles = polesByDimension();
 
-  let raw = await call({
+  let raw = await client.call({
     ...buildFinalizeMessages({ dimensionResults }),
     temperature: 0.4,
     maxTokens: 6000,
@@ -82,7 +81,7 @@ export async function finalizeReport({ dimensionResults, call, onNote = () => {}
 
     onNote(`finalize 首轮未通过校验：${problems}，重新生成一次`);
 
-    raw = await call({
+    raw = await client.call({
       ...buildFinalizeRetryMessages({ dimensionResults, problems }),
       temperature: 0.4,
       maxTokens: 6000,

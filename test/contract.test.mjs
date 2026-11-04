@@ -661,7 +661,8 @@ test('POST /api/score 允许跳题：写了一题就能提交，跳过的题记�
   }
 });
 
-test('POST /api/score 拒绝整维全空与不存在的跳过题号', async () => {  const server = await startServer({ call: async () => ({}) });
+test('POST /api/score 拒绝整维全空与不存在的跳过题号', async () => {
+  const server = await startServer({ call: async () => ({}) });
   try {
     const empty = await request(server, {
       method: 'POST',
