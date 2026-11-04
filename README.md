@@ -44,6 +44,46 @@ npm start
 http://127.0.0.1:5173/?mode=direct
 ```
 
+### 三、公网部署（访客免登录直接用）
+
+GitHub Pages 只能托管静态文件，放不下服务端密钥，所以"访客不用登录、也不用自己填 Key"
+这种体验需要把 `server.mjs` 一并部署出去。好在前端会自动判断走哪条链路——
+**同一份代码，两种接法，访客不需要知道区别**：
+
+| 部署形态 | 前端如何决策 | 访客体验 | 你的成本 |
+|---|---|---|---|
+| 本机 `npm start` | 探到同源 `/api/health` → 走后端 | 打开即用，不填 Key | 0（用你自己的账号额度） |
+| 公网部署本服务（Docker/Fly 等） | 同上 | 打开即用，不填 Key | 你承担全部推理费用 |
+| 纯静态（GitHub Pages） | 探不到后端 → 浏览器直连 | 要自己填一个 Key | 0 |
+
+判定逻辑在 `public/app.js` 的 `decideTransport()`，可用 `?mode=direct` / `?mode=server` 强制。
+
+#### 服务端配置项
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `HOST` | `127.0.0.1` | 监听地址。公网部署设为 `0.0.0.0` |
+| `PORT` | `5173` | 端口 |
+| `MBTI_CORS_ORIGINS` | （仅本机） | 允许的前端来源，逗号分隔；`*` 全放行。前后端同源时不必设 |
+| `MBTI_RATE_LIMIT` | `30` | 每 IP 每分钟接口调用上限，超了返回 429 |
+| `MBTI_RATE_WINDOW_MS` | `60000` | 限流窗口 |
+| `MBTI_TRUST_PROXY` | （关） | 置 `1` 时才采信 `X-Forwarded-For`（反代后必开，否则限流会误伤） |
+| `MBTI_API_KEY` | 本机配置 | 站点用的密钥，**只放服务端** |
+
+#### 部署到 Fly.io
+
+```bash
+fly launch --no-deploy --copy-config deploy/fly.toml
+fly secrets set MBTI_API_KEY=sk-...      # 不要提交进 git
+fly deploy --config deploy/fly.toml
+```
+
+`Dockerfile` 已备好（零 npm 依赖，不需要 `npm install`），前端与 API 同源部署，
+浏览器只访问一个域名，因此不需要配 `MBTI_CORS_ORIGINS`。
+
+> 提醒：公网部署意味着**每个访客都在消耗你的额度**。上线前务必确认
+> `MBTI_RATE_LIMIT` 与 `MBTI_CORS_ORIGINS` 已经设好，并清楚这是一个开放给公网的入口。
+
 ## 交互流程
 
 1. **开始页**：说明玩法与边界；选择版本（见下）；静态部署版在此填写 API Key。
