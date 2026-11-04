@@ -254,7 +254,10 @@ export function createServer({ config, llm, items } = {}) {
 
       sendJson(res, 405, { error: '不支持的方法' });
     } catch (err) {
-      const status = err?.statusCode || 500;
+      // LlmError 用的是 status（上游状态码），这里如实透传，别一律吞成 500。
+      const upstreamStatus = Number(err?.status);
+      const status = err?.statusCode
+        || (upstreamStatus >= 400 && upstreamStatus <= 599 ? upstreamStatus : 500);
       if (status >= 500) {
         console.error('[mbti-open] 服务端错误:', err?.message || err);
       }

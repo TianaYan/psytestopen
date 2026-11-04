@@ -6,8 +6,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { createServer } from '../server.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import { createLlmClient } from '../public/lib/llm.js';
 import {
   normalizeText,
   quoteMatches,
@@ -38,6 +43,62 @@ const FIXTURE_ANSWERS = [
 ];
 
 /* ---------- 纯函数 ---------- */
+
+test('loadConfig 读取思考模式开关', () => {  const empty = { env: {}, root: '不存在的目录', configPaths: [] };
+  assert.equal(loadConfig({ ...empty, env: { MBTI_THINKING: 'off' } }).thinking, 'off');
+  assert.equal(loadConfig({ ...empty, env: { MBTI_THINKING: 'disabled' } }).thinking, 'off');
+  assert.equal(loadConfig({ ...empty, env: { MBTI_THINKING: 'on' } }).thinking, 'on');
+  assert.equal(loadConfig(empty).thinking, '', '未设置时不应干预服务端默认');
+});
+
+test('loadConfig 的 .env.local 覆盖支持 KEY=值 与 KEY: 值 两种写法', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbti-env-'));
+  const file = path.join(dir, '.env.local');
+  fs.writeFileSync(file, [
+    '# 注释行',
+    'MBTI_API_KEY=sk-test-abc',
+    'MBTI_BASE_URL=https://api.deepseek.com/v1',
+    'MBTI_MODEL=deepseek-v4-pro',
+    'MBTI_THINKING=off',
+    '',
+  ].join('\n'), 'utf8');
+  try {
+    const cfg = loadConfig({ env: {}, root: dir, configPaths: [] });
+    assert.equal(cfg.apiKey, 'sk-test-abc');
+    assert.equal(cfg.baseURL, 'https://api.deepseek.com/v1', 'URL 里的冒号不应把 key 切坏');
+    assert.equal(cfg.model, 'deepseek-v4-pro');
+    assert.equal(cfg.thinking, 'off');
+    assert.equal(cfg.endpointHost, 'api.deepseek.com');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('createLlmClient 按 config 带上思考模式开关', async () => {
+  const sent = [];
+  const fakeFetch = async (url, init) => {
+    sent.push({ url, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  const off = createLlmClient(
+    { apiKey: 'k', keyConfigured: true, baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-v4-pro', protocol: 'openai', thinking: 'off' },
+    { fetchImpl: fakeFetch },
+  );
+  await off.call({ system: 's', user: 'u', temperature: 0.2, maxTokens: 100 });
+  assert.deepEqual(sent[0].body.thinking, { type: 'disabled' });
+  assert.equal(sent[0].url, 'https://api.deepseek.com/v1/chat/completions');
+
+  const none = createLlmClient(
+    { apiKey: 'k', keyConfigured: true, baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-v4-pro', protocol: 'openai' },
+    { fetchImpl: fakeFetch },
+  );
+  await none.call({ system: 's', user: 'u', temperature: 0.2, maxTokens: 100 });
+  assert.equal(sent[1].body.thinking, undefined, '未配置时不应下发 thinking 字段');
+});
 
 test('normalizeText 统一全角标点与空白', () => {
   assert.equal(normalizeText('你好，世界'), '你好,世界');

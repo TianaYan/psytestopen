@@ -137,6 +137,11 @@ export function createLlmClient(cfg, {
       if (useJsonFormat) body.response_format = { type: 'json_object' };
     }
 
+    // 思考模式开关（DeepSeek 等模型）：默认开启推理，会占用 max_tokens，
+    // 且使 temperature 失效。对"按固定 schema 抽取引文"这类任务，关掉更稳。
+    if (cfg.thinking === 'off') body.thinking = { type: 'disabled' };
+    else if (cfg.thinking === 'on') body.thinking = { type: 'enabled' };
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
