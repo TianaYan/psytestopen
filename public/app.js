@@ -28,18 +28,34 @@ const DEFAULT_API_CFG = {
   protocol: 'openai',
 };
 
-const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '0.0.0.0', '::1', '[::1]']);
-
 const HAS_BROWSER = typeof location !== 'undefined';
 const FORCE_MODE = HAS_BROWSER ? new URLSearchParams(location.search).get('mode') : null;
-const HOSTNAME = HAS_BROWSER ? location.hostname : '';
 
 /**
- * 是否走"浏览器直连 API"的静态模式。
- * ?mode=direct / ?mode=local 可以强制指定，便于在本机验证静态链路。
+ * 判型走哪条链路：
+ *   'server' —— 请求打到后端 /api/*，密钥由服务端保管，访客无需登录、无需填 Key；
+ *   'direct' —— 浏览器直连模型 API，访客自带 Key（纯静态部署，如 GitHub Pages）。
+ *
+ * 默认由「后端是否可达」决定，而不是看域名——因为前端与后端可能同源部署，
+ * 也可能分属两个域名（Pages + 公网 API）。
+ * ?mode=direct / ?mode=server 可强制指定，便于本地验证。
  */
-export const IS_DIRECT = HAS_BROWSER
-  && (FORCE_MODE === 'direct' || (FORCE_MODE !== 'local' && !LOCAL_HOSTS.has(HOSTNAME)));
+export function decideTransport({ forceMode = null, backendAvailable = false } = {}) {
+  if (forceMode === 'direct') return 'direct';
+  if (forceMode === 'server' || forceMode === 'local') return 'server';
+  return backendAvailable ? 'server' : 'direct';
+}
+
+let transport = 'server';
+
+/** 当前链路：'server'（走后端）或 'direct'（浏览器直连）。 */
+export function currentTransport() {
+  return transport;
+}
+
+export function isDirect() {
+  return transport === 'direct';
+}
 
 /** 直连模式下的接口配置，允许访客覆盖端点与模型。 */
 function loadApiCfg() {
@@ -274,7 +290,7 @@ export function bindRestart(button) {
  * 两条路径调用的是同一份 public/lib/pipeline.js，结果口径一致。
  */
 async function requestScore(dimension, answers, skipped = []) {
-  if (IS_DIRECT) {
+  if (isDirect()) {
     return scoreDimension({
       dimension,
       answers,
@@ -288,7 +304,7 @@ async function requestScore(dimension, answers, skipped = []) {
 
 /** 合成最终画像。同样两种路径。 */
 async function requestFinalize(dimensionResults) {
-  if (IS_DIRECT) {
+  if (isDirect()) {
     return finalizeReport({
       dimensionResults,
       client: directClient(),
@@ -382,8 +398,8 @@ export function buildStartView({
     ? `<span class="small">静态直连模式 · 浏览器直接调用 API · 密钥只存在你的浏览器里</span>`
     : itemHealth
       ? (itemHealth.keyConfigured
-        ? `<span class="small">服务已就绪 · 模型 ${esc(itemHealth.model)} · 端点 ${esc(itemHealth.endpointHost)}</span>`
-        : `<span class="small" style="color:var(--warn-ink)">服务未找到可用凭证，判型会失败：${esc(itemHealth.model || '模型未配置')}</span>`)
+        ? `<span class="small">服务端已就绪 · 模型 ${esc(itemHealth.model)} · 端点 ${esc(itemHealth.endpointHost)} · 密钥由服务端保管，你无需填写</span>`
+        : `<span class="small" style="color:var(--warn-ink)">服务端未找到可用凭证，判型会失败：${esc(itemHealth.model || '模型未配置')}</span>`)
       : '<span class="small">正在检查服务状态…</span>';
 
   const allItems = itemBank ? itemBank.items : [];
@@ -950,7 +966,7 @@ function bindRetryButtons() {
 
 function renderStart() {
   const apiCfg = loadApiCfg();
-  const keyPanel = IS_DIRECT
+  const keyPanel = isDirect()
     ? buildKeyPanel({
       hasKey: Boolean(loadApiKey()),
       endpoint: apiCfg.baseURL,
@@ -962,7 +978,7 @@ function renderStart() {
     health,
     resultCount: state.results.length,
     keyPanel,
-    direct: IS_DIRECT,
+    direct: isDirect(),
     mode: state.mode,
     modeSelectable: state.results.length === 0 && !state.final,
   });
@@ -1002,7 +1018,7 @@ function renderStart() {
   });
 
   dom.view.querySelector('#start-btn')?.addEventListener('click', () => {
-    if (IS_DIRECT && !loadApiKey()) {
+    if (isDirect() && !loadApiKey()) {
       state.error = '静态部署版需要你自己的 API Key：先在上面填一个，再开始作答。';
       render();
       return;
@@ -1203,13 +1219,23 @@ async function boot() {
     const [bankResponse, healthResponse] = await Promise.all([
       // 相对路径：GitHub Pages 挂在 /<repo>/ 子路径下，绝对路径会 404
       fetch('items.json'),
-      fetch('api/health').catch(() => null),
+      fetch('api/health', { cache: 'no-store' }).catch(() => null),
     ]);
     if (bankResponse.ok) bank = await bankResponse.json();
-    if (healthResponse && healthResponse.ok) health = await healthResponse.json();
+    if (healthResponse && healthResponse.ok) {
+      health = await healthResponse.json().catch(() => null);
+    }
   } catch (err) {
     console.warn('初始化失败', err);
   }
+
+  // 探到后端就走后端（密钥由服务端保管，访客无需登录或填 Key）；
+  // 探不到就走浏览器直连（纯静态部署，访客自带 Key）。
+  transport = decideTransport({
+    forceMode: FORCE_MODE,
+    backendAvailable: Boolean(health && health.ok),
+  });
+
   loadDraft();
   normalizeState();
 

@@ -1,0 +1,51 @@
+# Fly.io 部署清单
+#
+# 用法：
+#   fly launch --no-deploy --copy-config deploy/fly.toml   # 首次
+#   fly secrets set MBTI_API_KEY=sk-...                    # 站点用的密钥（不要提交进 git）
+#   fly deploy --config deploy/fly.toml
+#
+# 前端与 API 同源部署，浏览器只访问 https://<app>.fly.dev/，
+# 因此不需要配 MBTI_CORS_ORIGINS（默认只放行本机来源）。
+# 若前端另有一个域名（例如 GitHub Pages 静态版），把那个来源加进来：
+#   fly secrets set MBTI_CORS_ORIGINS=https://<user>.github.io
+
+app = "mbti-open"
+primary_region = "hkg"     # 亚太低延迟，用户群偏中文
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "5173"
+  MBTI_RATE_LIMIT = "30"          # 每 IP 每分钟接口调用上限
+  MBTI_RATE_WINDOW_MS = "60000"
+
+[http_service]
+  internal_port = 5173
+  force_https = true
+  auto_stop_machines = true       # 空闲 5 分钟停机，省钱
+  auto_start_machines = true
+  min_machines_running = 0        # 接受冷启动（流量低）
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 30
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "3s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[deploy]
+  strategy = "rolling"

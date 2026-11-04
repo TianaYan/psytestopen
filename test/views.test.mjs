@@ -20,6 +20,7 @@ import {
   readoutOf,
   expectedTypeFrom,
   coverageLine,
+  decideTransport,
   state,
   esc,
 } from '../public/app.js';
@@ -491,6 +492,17 @@ test('coverageLine 披露实际作答条数与跳过的题号', () => {
     /实际作答 4 题.*跳过 2 题（EI-02、EI-06）/s,
   );
   assert.equal(coverageLine(null), '');
+});
+
+test('decideTransport 按后端可达性选择链路', () => {
+  // 探到后端 → 走后端（访客免登录、无需填 Key）
+  assert.equal(decideTransport({ backendAvailable: true }), 'server');
+  // 探不到后端 → 浏览器直连（访客自带 Key）
+  assert.equal(decideTransport({ backendAvailable: false }), 'direct');
+  // 显式指定优先
+  assert.equal(decideTransport({ forceMode: 'direct', backendAvailable: true }), 'direct');
+  assert.equal(decideTransport({ forceMode: 'server', backendAvailable: false }), 'server');
+  assert.equal(decideTransport({ forceMode: 'local', backendAvailable: false }), 'server');
 });
 
 test('buildFinalView 在报告里说明跳过的题', () => {

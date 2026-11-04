@@ -1,0 +1,10 @@
+node_modules
+.git
+.github
+deploy
+test
+*.zip
+*.log
+.env
+.env.local
+mbti-open-bundle.zip

@@ -1,9 +1,16 @@
 /**
- * 开放题版 MBTI 测试页 —— 本地服务端。
+ * 开放题版 MBTI 测试页 —— 服务端。
  *
- *  - 只监听 127.0.0.1，密钥只存在于本进程内存，绝不下发到浏览器。
+ *  - 默认只监听 127.0.0.1（本地自用，密钥绝不下发到浏览器）。
+ *    设 HOST=0.0.0.0 可用于公网部署；公网部署还需要另外两样：
+ *      MBTI_CORS_ORIGINS  允许的前端来源（逗号分隔；前端与后端同源时可不设）
+ *      MBTI_RATE_LIMIT    每 IP 每分钟的接口调用上限（默认 30）
  *  - 无状态：作答不落盘，草稿保存在浏览器 localStorage。
  *  - /api/score 按维度串行（同一维度排队，跨维度并行），避免重复计分与瞬时打满配额。
+ *
+ * 前端有两种接法，靠 /api/health 自动判断：
+ *  - 探到后端 → 判型走本服务（密钥由服务端保管，访客无需登录、无需填 Key）
+ *  - 探不到后端 → 访客自带 Key，浏览器直连模型 API（纯静态部署，如 GitHub Pages）
  */
 
 import http from 'node:http';
@@ -24,6 +31,8 @@ const ITEMS_FILE = path.join(PUBLIC_DIR, 'items.json');
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_ANSWER_CHARS = 4000;
 const DEFAULT_PORT = 5173;
+const DEFAULT_HOST = '127.0.0.1';
+const LOCAL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0']);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -84,15 +93,66 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
-function originAllowed(req) {
+/** 逗号分隔的环境变量列表。 */
+export function envList(name, fallback = [], env = process.env) {
+  const raw = env[name];
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  return String(raw).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * 来源白名单。
+ * 本机来源一律放行；其余按 MBTI_CORS_ORIGINS 白名单（逗号分隔，* 表示全放行）。
+ */
+export function originAllowed(req, allowedOrigins = []) {
   const origin = req.headers.origin;
   if (!origin) return true; // 无 Origin 头（curl / 同源 fetch）
+  if (allowedOrigins.includes('*')) return true;
   try {
     const url = new URL(origin);
-    return url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]';
+    if (LOCAL_HOSTNAMES.has(url.hostname)) return true;
+    return allowedOrigins.includes(origin);
   } catch {
     return false;
   }
+}
+
+/**
+ * 进程内 IP 限流（滑动窗口）。公网部署时防止额度被单点刷爆。
+ * 计数只在本进程内——多实例部署时每个实例各算各的，够用但不是全局配额。
+ */
+export function createRateLimiter({ windowMs = 60_000, max = 30 } = {}) {
+  const hits = new Map();
+  return {
+    allow(key) {
+      const now = Date.now();
+      const recent = (hits.get(key) || []).filter((t) => now - t < windowMs);
+      if (recent.length >= max) {
+        hits.set(key, recent);
+        return false;
+      }
+      recent.push(now);
+      hits.set(key, recent);
+      if (hits.size > 4096) {
+        for (const [k, list] of hits) {
+          if (!list.length || now - list[list.length - 1] > windowMs) hits.delete(k);
+        }
+      }
+      return true;
+    },
+    reset() {
+      hits.clear();
+    },
+  };
+}
+
+/** 取调用方 IP。只有显式信任代理时才读 X-Forwarded-For（否则可被伪造）。 */
+export function clientIp(req, { trustProxy = false } = {}) {
+  if (trustProxy) {
+    const fwd = req.headers['x-forwarded-for'];
+    if (fwd) return String(fwd).split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || 'unknown';
 }
 
 /** 同维度串行队列。 */
@@ -166,12 +226,23 @@ function validateScoreRequest(body, items) {
  * @param {object} [opts]
  * @param {object} [opts.config] 覆盖配置（测试用）
  * @param {object} [opts.llm] 覆盖模型客户端（测试用）
+ * @param {string[]} [opts.allowedOrigins] CORS 白名单（测试用）
+ * @param {{allow:(key:string)=>boolean}} [opts.rateLimit] 限流器（测试用）
  */
-export function createServer({ config, llm, items } = {}) {
+export function createServer({
+  config, llm, items, allowedOrigins, rateLimit,
+} = {}) {
   const cfg = config ?? loadConfig();
   const client = llm ?? createLlmClient(cfg);
   const bank = items ?? loadItems();
   const enqueue = createQueues();
+
+  const origins = allowedOrigins ?? envList('MBTI_CORS_ORIGINS', []);
+  const limiter = rateLimit ?? createRateLimiter({
+    windowMs: Number(process.env.MBTI_RATE_WINDOW_MS) || 60_000,
+    max: Number(process.env.MBTI_RATE_LIMIT) || 30,
+  });
+  const trustProxy = process.env.MBTI_TRUST_PROXY === '1';
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -189,8 +260,14 @@ export function createServer({ config, llm, items } = {}) {
       }
 
       if (req.method === 'POST' && (pathname === '/api/score' || pathname === '/api/finalize')) {
-        if (!originAllowed(req)) {
+        if (!originAllowed(req, origins)) {
           sendJson(res, 403, { error: '拒绝跨源请求。' });
+          return;
+        }
+
+        const ip = clientIp(req, { trustProxy });
+        if (!limiter.allow(ip)) {
+          sendJson(res, 429, { error: '请求过于频繁，请稍后再试。' });
           return;
         }
 
@@ -254,10 +331,7 @@ export function createServer({ config, llm, items } = {}) {
 
       sendJson(res, 405, { error: '不支持的方法' });
     } catch (err) {
-      // LlmError 用的是 status（上游状态码），这里如实透传，别一律吞成 500。
-      const upstreamStatus = Number(err?.status);
-      const status = err?.statusCode
-        || (upstreamStatus >= 400 && upstreamStatus <= 599 ? upstreamStatus : 500);
+      const status = err?.statusCode || 500;
       if (status >= 500) {
         console.error('[mbti-open] 服务端错误:', err?.message || err);
       }
@@ -281,6 +355,7 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 if (isMain) {
   const { server, config, bank } = createServer();
   const port = Number(process.env.PORT) || DEFAULT_PORT;
+  const host = process.env.HOST || DEFAULT_HOST;
 
   server.on('error', (err) => {
     if (err?.code === 'EADDRINUSE') {
@@ -294,10 +369,15 @@ if (isMain) {
     process.exit(1);
   });
 
-  server.listen(port, '127.0.0.1', () => {
-    console.log(`[mbti-open] http://127.0.0.1:${port}`);
+  server.listen(port, host, () => {
+    console.log(`[mbti-open] http://${host}:${port}`);
     console.log(`[mbti-open] 模型 ${config.model || '(未配置)'} · 端点 ${config.endpointHost || '(未配置)'} · 凭证 ${config.keyConfigured ? '已就绪' : '缺失'}`);
     console.log(`[mbti-open] 题库 ${bank.items.length} 题 · 维度 ${DIMENSIONS.join(' / ')}`);
+    const allowed = envList('MBTI_CORS_ORIGINS', []);
+    console.log(`[mbti-open] CORS 白名单 ${allowed.length ? allowed.join(', ') : '（仅本机）'} · 限流 ${Number(process.env.MBTI_RATE_LIMIT) || 30} 次/分钟/IP`);
+    if (host === '0.0.0.0') {
+      console.warn('[mbti-open] 警告：已监听所有网卡（公网可达）。请确认已设置 MBTI_CORS_ORIGINS 与 MBTI_RATE_LIMIT，且密钥来自服务端环境变量。');
+    }
     if (!config.keyConfigured) {
       console.warn('[mbti-open] 警告：未找到可用凭证，判型接口会返回错误。设置 MBTI_API_KEY 或提供 .env.local。');
     }

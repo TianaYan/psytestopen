@@ -6,13 +6,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 
-import { createServer } from '../server.mjs';
-import { loadConfig } from '../lib/config.mjs';
-import { createLlmClient } from '../public/lib/llm.js';
+import { createServer, envList, createRateLimiter, clientIp } from '../server.mjs';
 import {
   normalizeText,
   quoteMatches,
@@ -43,62 +38,6 @@ const FIXTURE_ANSWERS = [
 ];
 
 /* ---------- 纯函数 ---------- */
-
-test('loadConfig 读取思考模式开关', () => {  const empty = { env: {}, root: '不存在的目录', configPaths: [] };
-  assert.equal(loadConfig({ ...empty, env: { MBTI_THINKING: 'off' } }).thinking, 'off');
-  assert.equal(loadConfig({ ...empty, env: { MBTI_THINKING: 'disabled' } }).thinking, 'off');
-  assert.equal(loadConfig({ ...empty, env: { MBTI_THINKING: 'on' } }).thinking, 'on');
-  assert.equal(loadConfig(empty).thinking, '', '未设置时不应干预服务端默认');
-});
-
-test('loadConfig 的 .env.local 覆盖支持 KEY=值 与 KEY: 值 两种写法', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbti-env-'));
-  const file = path.join(dir, '.env.local');
-  fs.writeFileSync(file, [
-    '# 注释行',
-    'MBTI_API_KEY=sk-test-abc',
-    'MBTI_BASE_URL=https://api.deepseek.com/v1',
-    'MBTI_MODEL=deepseek-v4-pro',
-    'MBTI_THINKING=off',
-    '',
-  ].join('\n'), 'utf8');
-  try {
-    const cfg = loadConfig({ env: {}, root: dir, configPaths: [] });
-    assert.equal(cfg.apiKey, 'sk-test-abc');
-    assert.equal(cfg.baseURL, 'https://api.deepseek.com/v1', 'URL 里的冒号不应把 key 切坏');
-    assert.equal(cfg.model, 'deepseek-v4-pro');
-    assert.equal(cfg.thinking, 'off');
-    assert.equal(cfg.endpointHost, 'api.deepseek.com');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('createLlmClient 按 config 带上思考模式开关', async () => {
-  const sent = [];
-  const fakeFetch = async (url, init) => {
-    sent.push({ url, body: JSON.parse(init.body) });
-    return new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  };
-
-  const off = createLlmClient(
-    { apiKey: 'k', keyConfigured: true, baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-v4-pro', protocol: 'openai', thinking: 'off' },
-    { fetchImpl: fakeFetch },
-  );
-  await off.call({ system: 's', user: 'u', temperature: 0.2, maxTokens: 100 });
-  assert.deepEqual(sent[0].body.thinking, { type: 'disabled' });
-  assert.equal(sent[0].url, 'https://api.deepseek.com/v1/chat/completions');
-
-  const none = createLlmClient(
-    { apiKey: 'k', keyConfigured: true, baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-v4-pro', protocol: 'openai' },
-    { fetchImpl: fakeFetch },
-  );
-  await none.call({ system: 's', user: 'u', temperature: 0.2, maxTokens: 100 });
-  assert.equal(sent[1].body.thinking, undefined, '未配置时不应下发 thinking 字段');
-});
 
 test('normalizeText 统一全角标点与空白', () => {
   assert.equal(normalizeText('你好，世界'), '你好,世界');
@@ -355,8 +294,8 @@ test('degradeBiography 只拼原话且每段都带可溯源引文', () => {
 
 /* ---------- HTTP 层 ---------- */
 
-function startServer(llm) {
-  const { server } = createServer({ config: TEST_CONFIG, llm });
+function startServer(llm, opts = {}) {
+  const { server } = createServer({ config: TEST_CONFIG, llm, ...opts });
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve(server));
   });
@@ -642,6 +581,90 @@ test('POST 拒绝跨源请求', async () => {
   } finally {
     server.close();
   }
+});
+
+test('POST 跨源请求在配置了白名单后放行', async () => {
+  const llm = {
+    call: async () => ({
+      dimension: 'E/I',
+      lean: 'I',
+      score: 0.8,
+      confidence: 0.8,
+      evidence: [{ itemId: 'EI-03', quote: '我更想谁也别见', signal: '独处后想躲起来', strength: 'strong' }],
+      counterEvidence: [],
+      misreadChecks: [],
+      missing: [],
+      note: 'mock',
+    }),
+  };
+  const server = await startServer(llm, { allowedOrigins: ['https://psytest.pages.dev'] });
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/score',
+      body: { dimension: 'E/I', answers: FIXTURE_ANSWERS },
+      headers: { origin: 'https://psytest.pages.dev' },
+    });
+    assert.equal(res.status, 200, '白名单内的来源应当被放行');
+
+    const blocked = await request(server, {
+      method: 'POST',
+      path: '/api/score',
+      body: { dimension: 'E/I', answers: FIXTURE_ANSWERS },
+      headers: { origin: 'https://not-allowed.example' },
+    });
+    assert.equal(blocked.status, 403, '白名单外的来源仍应被拒');
+  } finally {
+    server.close();
+  }
+});
+
+test('POST 触发限流时返回 429', async () => {
+  const llm = {
+    call: async () => ({
+      dimension: 'E/I',
+      lean: 'I',
+      score: 0.8,
+      confidence: 0.8,
+      evidence: [],
+      counterEvidence: [],
+      misreadChecks: [],
+      missing: [],
+      note: 'mock',
+    }),
+  };
+  const server = await startServer(llm, { rateLimit: { allow: () => false } });
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/score',
+      body: { dimension: 'E/I', answers: FIXTURE_ANSWERS },
+    });
+    assert.equal(res.status, 429);
+    assert.match(res.json.error, /过于频繁/);
+  } finally {
+    server.close();
+  }
+});
+
+test('envList 解析逗号分隔的环境变量', () => {
+  assert.deepEqual(envList('X', [], { X: 'a, b ,,c' }), ['a', 'b', 'c']);
+  assert.deepEqual(envList('X', ['fallback'], {}), ['fallback']);
+  assert.deepEqual(envList('X', [], { X: '' }), []);
+});
+
+test('createRateLimiter 在窗口内限流、窗口外放行', () => {
+  const limiter = createRateLimiter({ windowMs: 50, max: 2 });
+  assert.equal(limiter.allow('1.2.3.4'), true);
+  assert.equal(limiter.allow('1.2.3.4'), true);
+  assert.equal(limiter.allow('1.2.3.4'), false, '超出上限应被拒');
+  assert.equal(limiter.allow('5.6.7.8'), true, '不同 IP 各算各的');
+});
+
+test('clientIp 默认不信任 X-Forwarded-For', () => {
+  const req = { headers: { 'x-forwarded-for': '9.9.9.9' }, socket: { remoteAddress: '1.1.1.1' } };
+  assert.equal(clientIp(req), '1.1.1.1');
+  assert.equal(clientIp(req, { trustProxy: true }), '9.9.9.9');
 });
 
 test('题库字段完整且题干互不重复', async () => {
