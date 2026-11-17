@@ -1,26 +1,26 @@
 /**
  * 判型流程 —— 服务端与浏览器共用的唯一实现。
  *
- * 本地模式由 server.mjs 调用它；GitHub Pages 静态部署时由浏览器直接调用它。
- * 两条路径共用同一份提示词与校验规则，因此不会出现"本地结果与线上结果不一致"。
+ * 由 server.mjs 与浏览器直连链路共同调用；两条路径共用同一份提示词与校验规则，
+ * 因此不会出现"本地结果与线上结果不一致"。
+ *
+ * 维度、透镜与题库都来自**套件文件**（public/suites/<id>.json），
+ * 所以同一套引擎可以服务多个测试。
  *
  * 本模块只依赖同目录下的 prompts / validate / llm，不含任何 Node 专属 API，
  * 可以在浏览器里原样 import。
  */
 
 import {
-  DIMENSION_ORDER,
   buildScoreMessages,
   buildFinalizeMessages,
   buildFinalizeRetryMessages,
 } from './prompts.js';
 import { validateScore, validateFinalize, degradeBiography } from './validate.js';
 
-export { DIMENSION_ORDER };
-
-/** 各维度的两极，键为 E/I、S/N、T/F、J/P。 */
-export function polesByDimension() {
-  return Object.fromEntries(DIMENSION_ORDER.map((d) => [d.key, d.poles]));
+/** 各维度的两极，键为套件里的维度 key。 */
+export function polesByDimension(dimensions = []) {
+  return Object.fromEntries(dimensions.map((d) => [d.key, d.poles]));
 }
 
 /**
@@ -28,16 +28,21 @@ export function polesByDimension() {
  *
  * @param {object} params
  * @param {string} params.dimension
+ * @param {object} params.dimensionMeta 该维度的元信息（poles / lens）
  * @param {Array<{itemId:string,text:string}>} params.answers 本次问到的全部题目；跳过的题 text 为空
  * @param {Array<string>} [params.skipped] 受测者主动跳过的题号
  * @param {Array} params.items 本维度题库
  * @param {{call:Function}} params.client
  */
-export async function scoreDimension({ dimension, answers, items, skipped = [], client }) {
+export async function scoreDimension({
+  dimension, dimensionMeta, answers, items, skipped = [], client,
+}) {
   const skippedIds = Array.isArray(skipped) ? skipped.map(String) : [];
-  const { system, user } = buildScoreMessages({ dimension, items, answers, skipped: skippedIds });
+  const { system, user } = buildScoreMessages({
+    dimension, dimensionMeta, items, answers, skipped: skippedIds,
+  });
   const raw = await client.call({ system, user, temperature: 0.2, maxTokens: 3000 });
-  const poles = DIMENSION_ORDER.find((d) => d.key === dimension)?.poles || [];
+  const poles = (dimensionMeta && dimensionMeta.poles) || [];
   const result = validateScore(raw, answers, { poles });
 
   // 跳过的题没有任何作答材料：必须如实计入证据缺口，不能悄悄消失。
@@ -59,16 +64,16 @@ export async function scoreDimension({ dimension, answers, items, skipped = [], 
  * @param {{call:Function}} params.client
  * @param {(message:string)=>void} [params.onNote] 过程提示（服务端写日志，浏览器写控制台）
  */
-export async function finalizeReport({ dimensionResults, client, onNote = () => {} }) {
-  const poles = polesByDimension();
+export async function finalizeReport({ dimensionResults, dimensions = [], client, onNote = () => {} }) {
+  const poles = polesByDimension(dimensions);
 
   let raw = await client.call({
-    ...buildFinalizeMessages({ dimensionResults }),
+    ...buildFinalizeMessages({ dimensionResults, dimensions }),
     temperature: 0.4,
     maxTokens: 6000,
   });
 
-  let validated = validateFinalize(raw, dimensionResults, { polesByDimension: poles });
+  let validated = validateFinalize(raw, dimensionResults, { polesByDimension: poles, dimensionOrder: dimensions });
   reportTypeMismatch(validated, onNote);
 
   if (!validated.validation.biographyValid || !validated.type) {
@@ -76,17 +81,17 @@ export async function finalizeReport({ dimensionResults, client, onNote = () => 
       validated.validation.invalidParagraphs.length
         ? `第 ${validated.validation.invalidParagraphs.map((i) => i + 1).join('、')} 段没有可溯源的引文`
         : '小传段落为空',
-      validated.type ? '' : 'type 不是合法的四字母组合',
+      validated.type ? '' : 'type 不是合法的字母组合',
     ].filter(Boolean).join('；');
 
     onNote(`finalize 首轮未通过校验：${problems}，重新生成一次`);
 
     raw = await client.call({
-      ...buildFinalizeRetryMessages({ dimensionResults, problems }),
+      ...buildFinalizeRetryMessages({ dimensionResults, problems, dimensions }),
       temperature: 0.4,
       maxTokens: 6000,
     });
-    validated = validateFinalize(raw, dimensionResults, { polesByDimension: poles });
+    validated = validateFinalize(raw, dimensionResults, { polesByDimension: poles, dimensionOrder: dimensions });
     reportTypeMismatch(validated, onNote);
   }
 
@@ -96,7 +101,7 @@ export async function finalizeReport({ dimensionResults, client, onNote = () => 
 
   if (!validated.type) {
     // 最后的兜底：按维度顺序用单维结论拼出类型，并如实压低置信度。
-    validated.type = DIMENSION_ORDER.map((d) => {
+    validated.type = dimensions.map((d) => {
       const hit = (dimensionResults || []).find((r) => r?.dimension === d.key);
       const lean = hit && hit.lean !== 'ambiguous' ? hit.lean : '';
       return d.poles.includes(lean) ? lean : d.poles[0];

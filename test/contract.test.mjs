@@ -28,6 +28,13 @@ const TEST_CONFIG = {
   source: 'unit-test',
 };
 
+const MBTI_DIMENSIONS = [
+  { key: 'E/I', label: '能量朝向', poles: ['E', 'I'] },
+  { key: 'S/N', label: '信息摄取', poles: ['S', 'N'] },
+  { key: 'T/F', label: '决策方式', poles: ['T', 'F'] },
+  { key: 'J/P', label: '生活节奏', poles: ['J', 'P'] },
+];
+
 const FIXTURE_ANSWERS = [
   { itemId: 'EI-01', text: '上次年会散场，我在车上还想给同事回消息，兴奋得睡不着。' },
   { itemId: 'EI-02', text: '带项目那段其实挺累的，做完我只想一个人歇着。' },
@@ -159,7 +166,7 @@ test('validateFinalize 过滤引证表并标记无效小传段落', () => {
     ],
   };
 
-  const result = validateFinalize(raw, dimensionResults);
+  const result = validateFinalize(raw, dimensionResults, { dimensionOrder: MBTI_DIMENSIONS });
 
   assert.equal(result.type, 'INTJ');
   assert.equal(result.evidenceMap.length, 1, '未在维度结果里出现过的引文必须被剔除');
@@ -191,7 +198,7 @@ test('validateFinalize 用逐维倾向拼类型，不采信模型写错的 type'
     evidenceMap: [],
   };
 
-  const result = validateFinalize(raw, dimensionResults);
+  const result = validateFinalize(raw, dimensionResults, { dimensionOrder: MBTI_DIMENSIONS });
 
   assert.equal(result.type, 'ENTJ', '类型必须由逐维倾向拼出');
   assert.deepEqual(result.typeLetters, ['E', 'N', 'T', 'J']);
@@ -221,7 +228,7 @@ test('validateFinalize 单维判型的 ambiguous 会让位给汇总阶段的裁�
     evidenceMap: [],
   };
 
-  const result = validateFinalize(raw, dimensionResults);
+  const result = validateFinalize(raw, dimensionResults, { dimensionOrder: MBTI_DIMENSIONS });
 
   assert.equal(result.type, 'ENFJ');
   assert.equal(result.typeLetters[2], 'F', '上游定不出时，采纳汇总阶段的裁决');
@@ -276,7 +283,7 @@ test('validateFinalize 小传段落里的引文只引一段也算可溯源', () 
     evidenceMap: [],
   };
 
-  const result = validateFinalize(raw, dimensionResults);
+  const result = validateFinalize(raw, dimensionResults, { dimensionOrder: MBTI_DIMENSIONS });
   assert.deepEqual(result.validation.invalidParagraphs, [1], '只引一段的段落应算可溯源');
 });
 
@@ -354,14 +361,42 @@ test('GET /api/health 不泄露密钥', async () => {
   }
 });
 
-test('GET /items.json 返回 24 题、四维各 6 题', async () => {
+test('GET /suites/index.json 返回四个测试入口', async () => {
   const server = await startServer({ call: async () => ({}) });
   try {
-    const res = await request(server, { path: '/items.json' });
+    const res = await request(server, { path: '/suites/index.json' });
     assert.equal(res.status, 200);
-    assert.equal(res.json.items.length, 24);
-    for (const dimension of ['E/I', 'S/N', 'T/F', 'J/P']) {
-      assert.equal(res.json.items.filter((i) => i.dimension === dimension).length, 6, `${dimension} 应有 6 题`);
+    assert.ok(Array.isArray(res.json), '入口目录应是数组');
+    const ids = res.json.map((e) => e.id);
+    for (const id of ['mbti', 'bigfive', 'career', 'relationship']) {
+      assert.ok(ids.includes(id), `入口缺少 ${id}`);
+    }
+    for (const entry of res.json) {
+      assert.ok(entry.name, `${entry.id} 缺少名称`);
+      assert.ok(entry.tagline, `${entry.id} 缺少一句话说明`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('GET /suites/<id>.json 返回该套件的题库与维度透镜', async () => {
+  const server = await startServer({ call: async () => ({}) });
+  try {
+    for (const id of ['mbti', 'bigfive', 'career', 'relationship']) {
+      const res = await request(server, { path: `/suites/${id}.json` });
+      assert.equal(res.status, 200, `${id} 应可访问`);
+      const suite = res.json;
+      assert.equal(suite.id, id);
+      assert.ok(suite.dimensions.length >= 4, `${id} 应有至少 4 个维度`);
+      assert.ok(suite.items.length >= 24, `${id} 应有至少 24 题`);
+      for (const d of suite.dimensions) {
+        assert.ok(d.lens && d.lens.definition && d.lens.heart && d.lens.threshold, `${id}/${d.key} 透镜不完整`);
+        assert.ok(d.lens.signals.length >= 3, `${id}/${d.key} 识别信号不足`);
+        assert.ok(d.lens.misreads.length >= 3, `${id}/${d.key} 易误读清单不足`);
+        assert.equal(d.poles.length, 2, `${id}/${d.key} 必须两端各一`);
+        assert.equal(d.poleLabels.length, 2, `${id}/${d.key} 缺少两极的可读名`);
+      }
     }
   } finally {
     server.close();
@@ -667,40 +702,50 @@ test('clientIp 默认不信任 X-Forwarded-For', () => {
   assert.equal(clientIp(req, { trustProxy: true }), '9.9.9.9');
 });
 
-test('题库字段完整且题干互不重复', async () => {
+test('每个套件的题目字段完整且题干互不重复', async () => {
   const server = await startServer({ call: async () => ({}) });
   try {
-    const res = await request(server, { path: '/items.json' });
-    const prompts = new Set();
-    for (const item of res.json.items) {
-      assert.ok(item.id, '缺少 id');
-      assert.ok(['E/I', 'S/N', 'T/F', 'J/P'].includes(item.dimension), `题号 ${item.id} 维度非法`);
-      assert.ok(item.prompt && item.prompt.length > 6, `题号 ${item.id} 题干过短`);
-      assert.ok(item.construct, `题号 ${item.id} 缺少构念`);
-      assert.ok(item.writingGuide, `题号 ${item.id} 缺少写作指引`);
-      assert.ok(Array.isArray(item.minInfo) && item.minInfo.length >= 2, `题号 ${item.id} 缺少最小信息要求`);
-      assert.ok(item.anchors && Object.keys(item.anchors).length === 2, `题号 ${item.id} 锚点必须两端各一`);
-      assert.ok(Array.isArray(item.misreads) && item.misreads.length >= 1, `题号 ${item.id} 缺少误读防护`);
-      assert.ok(['core', 'extended'].includes(item.tier), `题号 ${item.id} 缺少 tier 分层`);
-      assert.ok(!prompts.has(item.prompt), `题号 ${item.id} 题干重复`);
-      prompts.add(item.prompt);
+    const globalPrompts = new Set();
+    for (const id of ['mbti', 'bigfive', 'career', 'relationship']) {
+      const res = await request(server, { path: `/suites/${id}.json` });
+      const suite = res.json;
+      const dimKeys = suite.dimensions.map((d) => d.key);
+      for (const item of suite.items) {
+        assert.ok(item.id, `${id} 缺少 id`);
+        assert.ok(dimKeys.includes(item.dimension), `${id}/${item.id} 维度非法`);
+        assert.ok(item.prompt && item.prompt.length > 6, `${id}/${item.id} 题干过短`);
+        assert.ok(item.construct, `${id}/${item.id} 缺少构念`);
+        assert.ok(item.writingGuide, `${id}/${item.id} 缺少写作指引`);
+        assert.ok(Array.isArray(item.minInfo) && item.minInfo.length >= 3, `${id}/${item.id} 缺少最小信息要求`);
+        assert.ok(item.anchors && Object.keys(item.anchors).length === 2, `${id}/${item.id} 锚点必须两端各一`);
+        assert.ok(Array.isArray(item.misreads) && item.misreads.length >= 2, `${id}/${item.id} 缺少误读防护`);
+        assert.ok(['core', 'extended'].includes(item.tier), `${id}/${item.id} 缺少 tier 分层`);
+        assert.ok(!globalPrompts.has(item.prompt), `题号 ${item.id} 题干与其他套件重复`);
+        globalPrompts.add(item.prompt);
+      }
+      const ids = new Set(suite.items.map((i) => i.id));
+      assert.equal(ids.size, suite.items.length, `${id} 存在重复题号`);
     }
   } finally {
     server.close();
   }
 });
 
-test('题库每个维度恰好 4 道核心题、2 道扩展题', async () => {
+test('每个维度恰好 4 道核心题、2 道扩展题', async () => {
   const server = await startServer({ call: async () => ({}) });
   try {
-    const res = await request(server, { path: '/items.json' });
-    for (const dimension of ['E/I', 'S/N', 'T/F', 'J/P']) {
-      const items = res.json.items.filter((i) => i.dimension === dimension);
-      assert.equal(items.length, 6, `${dimension} 应有 6 题`);
-      assert.equal(items.filter((i) => i.tier === 'core').length, 4, `${dimension} 应有 4 道核心题`);
-      assert.equal(items.filter((i) => i.tier === 'extended').length, 2, `${dimension} 应有 2 道扩展题`);
+    for (const id of ['mbti', 'bigfive', 'career', 'relationship']) {
+      const res = await request(server, { path: `/suites/${id}.json` });
+      const suite = res.json;
+      for (const d of suite.dimensions) {
+        const items = suite.items.filter((i) => i.dimension === d.key);
+        assert.equal(items.length, 6, `${id}/${d.key} 应有 6 题`);
+        assert.equal(items.filter((i) => i.tier === 'core').length, 4, `${id}/${d.key} 应有 4 道核心题`);
+        assert.equal(items.filter((i) => i.tier === 'extended').length, 2, `${id}/${d.key} 应有 2 道扩展题`);
+      }
+      const core = suite.items.filter((i) => i.tier === 'core').length;
+      assert.equal(core, suite.dimensions.length * 4, `${id} 核心题总数应为维度的 4 倍`);
     }
-    assert.equal(res.json.items.filter((i) => i.tier === 'core').length, 16, '核心题共 16 道');
   } finally {
     server.close();
   }

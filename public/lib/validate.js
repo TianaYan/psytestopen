@@ -5,8 +5,6 @@
  * 找不到就丢弃该条证据并下调置信度；一条都找不到就把该维判为 ambiguous。
  */
 
-import { DIMENSION_ORDER } from './prompts.js';
-
 /** 全角转半角、去零宽字符、引号归一、空白折叠。两侧同样处理，因此对称。 */
 export function normalizeText(value) {
   let out = String(value ?? '');
@@ -33,7 +31,12 @@ function clamp01(value) {
   return Math.min(1, Math.max(0, n));
 }
 
-const LEAN_VALUES = ['E', 'I', 'S', 'N', 'T', 'F', 'J', 'P'];
+/**
+ * 合法倾向值随套件走：默认是 MBTI 的八个字母，
+ * 但只要调用方给了该维度的两个极，就以这两个极为准——
+ * 大五人格用 L/H、I/O、T/W……，写死 MBTI 会把它们的倾向全判成 ambiguous。
+ */
+const MBTI_LEAN_VALUES = ['E', 'I', 'S', 'N', 'T', 'F', 'J', 'P'];
 
 /**
  * 校验 /api/score 的返回。
@@ -75,7 +78,8 @@ export function validateScore(raw, answers, { poles = [] } = {}) {
   let confidence = clamp01(raw?.confidence);
   if (dropped.length) confidence = Math.max(0, confidence - 0.08 * dropped.length);
 
-  let lean = LEAN_VALUES.includes(raw?.lean) ? raw.lean : 'ambiguous';
+  const validLeans = Array.isArray(poles) && poles.length === 2 ? poles : MBTI_LEAN_VALUES;
+  let lean = validLeans.includes(raw?.lean) ? raw.lean : 'ambiguous';
   let score = clamp01(raw?.score);
 
   if (evidence.length === 0) {
@@ -177,7 +181,7 @@ export function extractQuotedFragments(text) {
  * 引证表只保留确实来自上游已校验引文的条目；
  * 小传段落若没有至少一处可溯源引文，记为无效段落。
  */
-export function validateFinalize(raw, dimensionResults, { polesByDimension = {} } = {}) {
+export function validateFinalize(raw, dimensionResults, { polesByDimension = {}, dimensionOrder = [] } = {}) {
   const allowed = collectValidatedQuotes(dimensionResults);
 
   const evidenceMap = (Array.isArray(raw?.evidenceMap) ? raw.evidenceMap : [])
@@ -201,7 +205,25 @@ export function validateFinalize(raw, dimensionResults, { polesByDimension = {} 
   });
 
   const type = String(raw?.type ?? '').toUpperCase();
-  const modelType = /^[EISNTFJP]{4}$/.test(type) ? type : '';
+
+  // 类型字母的合法性由套件决定：字母数必须等于维度数，且每一位都要落在该维度的两极里。
+  // 不能写死 MBTI 的 E/S/N/T/F/J/P——大五人格是 5 维、职业画像与关系套件用的是另一套字母。
+  const poleLettersOf = (key) => {
+    const byKey = polesByDimension[key];
+    if (Array.isArray(byKey) && byKey.length) return byKey;
+    const meta = dimensionOrder.find((d) => d.key === key);
+    return (meta && meta.poles) || [];
+  };
+  const typeShapeOk = (candidate) => {
+    const letters = String(candidate || '').split('');
+    if (letters.length !== dimensionOrder.length) return false;
+    return letters.every((ch, index) => {
+      const poles = poleLettersOf(dimensionOrder[index].key);
+      return poles.length > 0 && poles.includes(ch);
+    });
+  };
+
+  const modelType = typeShapeOk(type) ? type : '';
 
   const dimensions = (Array.isArray(raw?.dimensions)
     ? raw.dimensions
@@ -234,7 +256,7 @@ export function validateFinalize(raw, dimensionResults, { polesByDimension = {} 
 
   const typeLetters = [];
   const typeLetterSources = [];
-  DIMENSION_ORDER.forEach((meta, index) => {
+  dimensionOrder.forEach((meta, index) => {
     const key = meta.key;
     const [poleA, poleB] = polesByDimension[key] || meta.poles || [];
     const isPole = (value) => value === poleA || value === poleB;
@@ -271,7 +293,7 @@ export function validateFinalize(raw, dimensionResults, { polesByDimension = {} 
   if (typeLetterSources.includes('fallback')) typeConfidence = Math.min(typeConfidence, 0.35);
 
   return {
-    type: /^[EISNTFJP]{4}$/.test(derivedType) ? derivedType : '',
+    type: typeShapeOk(derivedType) ? derivedType : '',
     typeConfidence,
     typeLetters,
     dimensions,

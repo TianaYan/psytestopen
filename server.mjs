@@ -21,12 +21,13 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig, publicView } from './lib/config.mjs';
 import { createLlmClient, LlmError, redact } from './public/lib/llm.js';
-import { DIMENSIONS, DIMENSION_ORDER } from './public/lib/prompts.js';
 import { scoreDimension, finalizeReport } from './public/lib/pipeline.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(HERE, 'public');
-const ITEMS_FILE = path.join(PUBLIC_DIR, 'items.json');
+const SUITES_DIR = path.join(PUBLIC_DIR, 'suites');
+const SUITES_INDEX_FILE = path.join(SUITES_DIR, 'index.json');
+const DEFAULT_SUITE = 'mbti';
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_ANSWER_CHARS = 4000;
@@ -44,10 +45,15 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
-function loadItems() {
-  const raw = fs.readFileSync(ITEMS_FILE, 'utf8');
-  const parsed = JSON.parse(raw);
-  return parsed;
+/** 载入所有测试套件：题库 + 维度定义 + 维度透镜，都随套件文件走。 */
+function loadSuites() {
+  const index = JSON.parse(fs.readFileSync(SUITES_INDEX_FILE, 'utf8'));
+  const suites = new Map();
+  for (const entry of index) {
+    const file = path.join(SUITES_DIR, `${entry.id}.json`);
+    suites.set(entry.id, JSON.parse(fs.readFileSync(file, 'utf8')));
+  }
+  return { index, suites };
 }
 
 function readBody(req, limit = MAX_BODY_BYTES) {
@@ -166,14 +172,15 @@ function createQueues() {
   };
 }
 
-function validateScoreRequest(body, items) {
+function validateScoreRequest(body, suite) {
   const dimension = String(body?.dimension ?? '');
-  if (!DIMENSIONS.includes(dimension)) {
-    const err = new Error(`未知维度：${dimension || '(空)'}`);
+  const dimensionKeys = (suite.dimensions || []).map((d) => d.key);
+  if (!dimensionKeys.includes(dimension)) {
+    const err = new Error(`未知维度：${dimension || '(空)'}（套件 ${suite.id}）`);
     err.statusCode = 400;
     throw err;
   }
-  const allowed = new Set(items.items.filter((i) => i.dimension === dimension).map((i) => i.id));
+  const allowed = new Set(suite.items.filter((i) => i.dimension === dimension).map((i) => i.id));
   const rawAnswers = Array.isArray(body?.answers) ? body.answers : [];
   const answers = [];
   const seen = new Set();
@@ -230,11 +237,11 @@ function validateScoreRequest(body, items) {
  * @param {{allow:(key:string)=>boolean}} [opts.rateLimit] 限流器（测试用）
  */
 export function createServer({
-  config, llm, items, allowedOrigins, rateLimit,
+  config, llm, suites, allowedOrigins, rateLimit,
 } = {}) {
   const cfg = config ?? loadConfig();
   const client = llm ?? createLlmClient(cfg);
-  const bank = items ?? loadItems();
+  const suiteSet = suites ?? loadSuites().suites;
   const enqueue = createQueues();
 
   const origins = allowedOrigins ?? envList('MBTI_CORS_ORIGINS', []);
@@ -253,8 +260,7 @@ export function createServer({
         sendJson(res, 200, {
           ok: true,
           ...publicView(cfg),
-          dimensions: DIMENSIONS,
-          itemCount: bank.items.length,
+          suites: [...suiteSet.keys()],
         });
         return;
       }
@@ -272,16 +278,30 @@ export function createServer({
         }
 
         const body = await readBody(req);
+        const suiteId = String(body?.suite || DEFAULT_SUITE);
+        const suite = suiteSet.get(suiteId);
+        if (!suite) {
+          sendJson(res, 400, { error: `未知套件：${suiteId}` });
+          return;
+        }
 
         if (pathname === '/api/score') {
-          const { dimension, answers, skipped } = validateScoreRequest(body, bank);
+          const { dimension, answers, skipped } = validateScoreRequest(body, suite);
+          const dimensionMeta = suite.dimensions.find((d) => d.key === dimension);
           console.log(
-            `[mbti-open] POST /api/score ${dimension} (${answers.length} 题`
+            `[mbti-open] POST /api/score ${suiteId}/${dimension} (${answers.length} 题`
             + `${skipped.length ? `，跳过 ${skipped.length}` : ''})`,
           );
 
-          const result = await enqueue(`score:${dimension}`, () =>
-            scoreDimension({ dimension, answers, skipped, items: bank.items, client }));
+          const result = await enqueue(`score:${suiteId}:${dimension}`, () =>
+            scoreDimension({
+              dimension,
+              dimensionMeta,
+              answers,
+              skipped,
+              items: suite.items,
+              client,
+            }));
 
           sendJson(res, 200, result);
           return;
@@ -294,11 +314,13 @@ export function createServer({
           err.statusCode = 400;
           throw err;
         }
-        console.log(`[mbti-open] POST /api/finalize (${dimensionResults.length} 维)`);
+        const dimensions = suite.dimensions;
+        console.log(`[mbti-open] POST /api/finalize ${suiteId} (${dimensionResults.length} 维)`);
 
-        const result = await enqueue('finalize', () =>
+        const result = await enqueue(`finalize:${suiteId}`, () =>
           finalizeReport({
             dimensionResults,
+            dimensions,
             client,
             onNote: (message) => console.log(`[mbti-open] ${message}`),
           }));
@@ -347,13 +369,13 @@ export function createServer({
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
   });
 
-  return { server, config: cfg, bank, dimensionOrder: DIMENSION_ORDER };
+  return { server, config: cfg, suites: suiteSet };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isMain) {
-  const { server, config, bank } = createServer();
+  const { server, config, suites } = createServer();
   const port = Number(process.env.PORT) || DEFAULT_PORT;
   const host = process.env.HOST || DEFAULT_HOST;
 
@@ -372,7 +394,7 @@ if (isMain) {
   server.listen(port, host, () => {
     console.log(`[mbti-open] http://${host}:${port}`);
     console.log(`[mbti-open] 模型 ${config.model || '(未配置)'} · 端点 ${config.endpointHost || '(未配置)'} · 凭证 ${config.keyConfigured ? '已就绪' : '缺失'}`);
-    console.log(`[mbti-open] 题库 ${bank.items.length} 题 · 维度 ${DIMENSIONS.join(' / ')}`);
+    console.log(`[mbti-open] 题库 ${[...suites.values()].map((s) => `${s.name}(${s.items.length} 题/${s.dimensions.length} 维)`).join(' · ')}`);
     const allowed = envList('MBTI_CORS_ORIGINS', []);
     console.log(`[mbti-open] CORS 白名单 ${allowed.length ? allowed.join(', ') : '（仅本机）'} · 限流 ${Number(process.env.MBTI_RATE_LIMIT) || 30} 次/分钟/IP`);
     if (host === '0.0.0.0') {

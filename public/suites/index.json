@@ -1,0 +1,34 @@
+[
+  {
+    "id": "mbti",
+    "name": "开放题版 MBTI",
+    "tagline": "四个维度，倾向、置信度与一份能追溯到原句的人物小传",
+    "dimensionCount": 4,
+    "itemCount": 24,
+    "coreItemCount": 16
+  },
+  {
+    "id": "bigfive",
+    "name": "开放题版大五人格",
+    "tagline": "五个维度各是一条连续谱，不做类型划分",
+    "dimensionCount": 5,
+    "itemCount": 30,
+    "coreItemCount": 20
+  },
+  {
+    "id": "career",
+    "name": "开放题版职业画像",
+    "tagline": "测的是做事方式，不是你该做什么工作",
+    "dimensionCount": 4,
+    "itemCount": 24,
+    "coreItemCount": 16
+  },
+  {
+    "id": "relationship",
+    "name": "开放题版关系与依恋模式",
+    "tagline": "看互动模式，不给关系定级",
+    "dimensionCount": 4,
+    "itemCount": 24,
+    "coreItemCount": 16
+  }
+]

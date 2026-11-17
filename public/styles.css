@@ -202,6 +202,70 @@ p { margin: 0 0 16px; }
 
 .btn-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
+/* ---------- 测试入口列表 ---------- */
+
+.suite-panel {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--ink);
+  background: var(--paper-deep);
+  padding: 20px 22px 18px;
+  margin: 26px 0;
+}
+
+.suite-panel__title {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.suite-panel__row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.suite-card {
+  flex: 1 1 240px;
+  min-width: 210px;
+  text-align: left;
+  font-family: var(--sans);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  padding: 14px 16px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.suite-card:hover { border-color: var(--ink); }
+
+.suite-card--on {
+  border-color: var(--accent);
+  border-left-width: 3px;
+  background: #fdf6f1;
+}
+
+.suite-card__title {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.suite-card__meta {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.suite-card__note {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
 /* ---------- 版本选择（完整版 / 快速版） ---------- */
 
 .mode-panel {

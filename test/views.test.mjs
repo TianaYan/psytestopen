@@ -20,7 +20,6 @@ import {
   readoutOf,
   expectedTypeFrom,
   coverageLine,
-  decideTransport,
   state,
   esc,
 } from '../public/app.js';
@@ -34,10 +33,10 @@ const SCRIPT_CLOSE = LT + '/script' + GT;
 
 const ITEM_BANK = {
   dimensions: [
-    { key: 'E/I', label: '能量朝向', poles: ['E', 'I'] },
-    { key: 'S/N', label: '信息摄取', poles: ['S', 'N'] },
-    { key: 'T/F', label: '决策方式', poles: ['T', 'F'] },
-    { key: 'J/P', label: '生活节奏', poles: ['J', 'P'] },
+    { key: 'E/I', label: '能量朝向', poles: ['E', 'I'], poleLabels: ['外向', '内向'] },
+    { key: 'S/N', label: '信息摄取', poles: ['S', 'N'], poleLabels: ['实感', '直觉'] },
+    { key: 'T/F', label: '决策方式', poles: ['T', 'F'], poleLabels: ['思考', '情感'] },
+    { key: 'J/P', label: '生活节奏', poles: ['J', 'P'], poleLabels: ['判断', '知觉'] },
   ],
 };
 
@@ -93,6 +92,7 @@ const FINAL_RESULT = {
 test('normalizeState 迁移旧阶段并对齐到第一个未判型的维度', () => {
   const snapshot = JSON.parse(JSON.stringify(state));
 
+  state.suite = { id: 'mbti', dimensions: ITEM_BANK.dimensions, items: [] };
   state.stage = 'dimensionResult';
   state.results = [DIMENSION_RESULT];
   state.final = null;
@@ -125,6 +125,7 @@ test('buildStatusStrip 标出各维度状态', () => {
     pending: { 'S/N': true },
     errors: { 'T/F': '上游超时' },
     dimIndex: 3,
+    dimensions: ITEM_BANK.dimensions,
   });
   assert.match(html, /E\/I/);
   assert.match(html, /完成/);
@@ -132,7 +133,7 @@ test('buildStatusStrip 标出各维度状态', () => {
   assert.match(html, /失败/);
   assert.match(html, /作答中/);
 
-  const idle = buildStatusStrip({ results: [], pending: {}, errors: {}, dimIndex: 0 });
+  const idle = buildStatusStrip({ results: [], pending: {}, errors: {}, dimIndex: 0, dimensions: ITEM_BANK.dimensions });
   assert.match(idle, /待答/);
 });
 
@@ -148,7 +149,7 @@ test('buildErrorBanner 无错误时不输出任何内容', () => {
 
 test('buildStartView 含开始入口与边界声明', () => {
   const html = buildStartView({
-    bank: { items: new Array(24).fill({}) },
+    suite: { dimensions: ITEM_BANK.dimensions, items: new Array(24).fill({}) },
     health: { keyConfigured: true, model: 'MiniMax-M2.7', endpointHost: 'api.minimaxi.com' },
     resultCount: 0,
   });
@@ -240,7 +241,7 @@ test('buildGeneratingView 说明后台并行并含状态条', () => {
     errorBanner: '',
     error: null,
   });
-  assert.match(html, /正在收束四个维度的判型结果/);
+  assert.match(html, /正在收束4个维度的判型结果/);
   assert.match(html, /后台独立进行/);
   assert.match(html, /dim-strip/);
   assert.match(html, /等待后台判型完成/);
@@ -263,7 +264,7 @@ test('buildDimensionDetail 输出支撑、反向、易误读与缺口', () => {
 test('buildFinalView 输出类型字母、四维表、小传、引证表与边界声明', () => {
   const html = buildFinalView({
     final: FINAL_RESULT,
-    itemBank: ITEM_BANK,
+    suite: ITEM_BANK,
     dimensionResults: [DIMENSION_RESULT],
     error: null,
     errorBanner: '',
@@ -276,7 +277,7 @@ test('buildFinalView 输出类型字母、四维表、小传、引证表与边�
   assert.deepEqual(letters, ['I', 'S', 'F', 'P']);
 
   assert.match(html, /整体置信度 84%/);
-  assert.match(html, /四维读数/);
+  assert.match(html, /4维读数/);
   assert.match(html, /往 I 偏/);
   assert.match(html, /在具体经验与关系感受之间保持弹性/);
   assert.match(html, /证据薄弱的地方在于/);
@@ -291,12 +292,12 @@ test('buildFinalView 输出类型字母、四维表、小传、引证表与边�
 test('buildFinalView 汇总展示各维度的完整判型依据', () => {
   const html = buildFinalView({
     final: FINAL_RESULT,
-    itemBank: ITEM_BANK,
+    suite: ITEM_BANK,
     dimensionResults: [DIMENSION_RESULT],
     error: null,
     errorBanner: '',
   });
-  assert.match(html, /四个维度的判型依据/);
+  assert.match(html, /4个维度的判型依据/);
   assert.match(html, /dim-block/);
   assert.match(html, /E\/I · 能量朝向/);
   assert.match(html, /轴 E → I/);
@@ -312,7 +313,7 @@ test('buildFinalView 对用户内容做转义，不注入可执行标记', () =>
       paragraphs: [SCRIPT_OPEN + 'alert(1)' + SCRIPT_CLOSE + ' 与「我更想谁也别见」'],
     },
   };
-  const html = buildFinalView({ final: hostile, itemBank: ITEM_BANK, dimensionResults: [], error: null, errorBanner: '' });
+  const html = buildFinalView({ final: hostile, suite: ITEM_BANK, dimensionResults: [], error: null, errorBanner: '' });
   assert.ok(!html.includes(SCRIPT_OPEN + 'alert(1)'), '用户内容里的 script 标签必须被转义');
   assert.match(html, /alert\(1\)/);
 });
@@ -327,14 +328,14 @@ test('buildFinalView 在小传降级时改用保守版并标注', () => {
       degraded: true,
     },
   };
-  const html = buildFinalView({ final: degraded, itemBank: ITEM_BANK, dimensionResults: [], error: null, errorBanner: '' });
+  const html = buildFinalView({ final: degraded, suite: ITEM_BANK, dimensionResults: [], error: null, errorBanner: '' });
   assert.match(html, /本次分析未生成叙述性小传/);
   assert.match(html, /我更想谁也别见/);
   assert.ok(!html.includes('class="biography"'), '降级时不应渲染完整小传块');
 });
 
 test('buildFinalView 在没有结果时给出提示而不是抛错', () => {
-  const html = buildFinalView({ final: null, itemBank: ITEM_BANK, dimensionResults: [], error: null, errorBanner: '' });
+  const html = buildFinalView({ final: null, suite: ITEM_BANK, dimensionResults: [], error: null, errorBanner: '' });
   assert.match(html, /还没有生成最终画像/);
 });
 
@@ -360,7 +361,7 @@ test('readoutOf 把轴坐标换算成与倾向一致的强度', () => {
 test('buildFinalView 的强度与方向跟倾向对齐', () => {
   const html = buildFinalView({
     final: FINAL_RESULT,
-    itemBank: ITEM_BANK,
+    suite: ITEM_BANK,
     dimensionResults: [{
       ...DIMENSION_RESULT,
       dimension: 'S/N',
@@ -396,7 +397,7 @@ test('buildFinalView 在两阶段读数不一致时把两个都列出来', () =>
         { dimension: 'T/F', lean: 'T', score: 0.5, strength: 0.5, axis: { from: 'T', to: 'F' }, confidence: 0.52, rationale: '微弱裁决' },
       ],
     },
-    itemBank: ITEM_BANK,
+    suite: ITEM_BANK,
     dimensionResults: [DIMENSION_RESULT, ambiguousTF],
     error: null,
     errorBanner: '',
@@ -408,7 +409,7 @@ test('buildFinalView 在两阶段读数不一致时把两个都列出来', () =>
 test('buildFinalView 不重复小传标题', () => {
   const html = buildFinalView({
     final: FINAL_RESULT,
-    itemBank: ITEM_BANK,
+    suite: ITEM_BANK,
     dimensionResults: [DIMENSION_RESULT],
     error: null,
     errorBanner: '',
@@ -430,26 +431,85 @@ test('buildStartView 提供完整版与快速版选择', () => {
       }))),
     ],
   };
-  const full = buildStartView({ bank, health: null, resultCount: 0, mode: 'full' });
+  const full = buildStartView({ suite: bank, health: null, resultCount: 0, mode: 'full' });
   assert.match(full, /data-mode="full"/);
   assert.match(full, /data-mode="quick"/);
   assert.match(full, /每组 6 题/);
   assert.match(full, /共 24 题/);
 
-  const quick = buildStartView({ bank, health: null, resultCount: 0, mode: 'quick' });
+  const quick = buildStartView({ suite: bank, health: null, resultCount: 0, mode: 'quick' });
   assert.match(quick, /每组 4 题/);
   assert.match(quick, /共 16 题/);
 });
 
 test('buildStartView 已有作答时不提供版本切换', () => {
   const html = buildStartView({
-    bank: { dimensions: ITEM_BANK.dimensions, items: [] },
+    suite: { dimensions: ITEM_BANK.dimensions, items: [] },
     health: null,
     resultCount: 2,
     modeSelectable: false,
   });
   assert.ok(!html.includes('data-mode="quick"'), '已有进度时不应再让用户换版本');
   assert.match(html, /想换版本请点/);
+});
+
+/**
+ * 回归：版本卡的「每维 N 题」曾跟着当前选中的版本走——
+ * 完整版状态下会拿完整版题数去渲染快速版卡片，显示成"每维 8 题"这类错数，
+ * 必须点一下切换版本才会变对。两个版本的题量必须各自独立、且与当前选中哪个无关。
+ */
+test('buildStartView 的两张版本卡题量与套件实际题量一致（与当前选中哪个版本无关）', () => {
+  const makeBank = (dimensionKeys) => ({
+    dimensions: dimensionKeys.map((key) => ({
+      key, label: key, poles: ['A', 'B'], poleLabels: ['甲', '乙'],
+    })),
+    items: dimensionKeys.flatMap((key) => [0, 1, 2, 3, 4, 5].map((n) => ({
+      id: `${key}-0${n + 1}`,
+      dimension: key,
+      tier: n < 4 ? 'core' : 'extended',
+    }))),
+  });
+
+  // 4 维套件：完整版 6 题/维 共 24 题，快速版 4 题/维 共 16 题
+  const four = makeBank(['A', 'B', 'C', 'D']);
+  for (const mode of ['full', 'quick']) {
+    const html = buildStartView({ suite: four, health: null, resultCount: 0, mode });
+    assert.match(html, /每维 6 题 · 共 24 题/, `${mode} 下完整版卡片题量不对`);
+    assert.match(html, /每维 4 题 · 共 16 题/, `${mode} 下快速版卡片题量不对`);
+    assert.ok(!html.includes('每维 8 题'), `${mode} 下不该出现"每维 8 题"`);
+  }
+
+  // 5 维套件：完整版 6 题/维 共 30 题，快速版 4 题/维 共 20 题
+  const five = makeBank(['A', 'B', 'C', 'D', 'E']);
+  for (const mode of ['full', 'quick']) {
+    const html = buildStartView({ suite: five, health: null, resultCount: 0, mode });
+    assert.match(html, /每维 6 题 · 共 30 题/, `${mode} 下完整版卡片题量不对`);
+    assert.match(html, /每维 4 题 · 共 20 题/, `${mode} 下快速版卡片题量不对`);
+  }
+
+  // 顶部说明里的两个数字同样不能随当前版本漂移
+  const html = buildStartView({ suite: four, health: null, resultCount: 0, mode: 'full' });
+  assert.match(html, /快速版每个维度只问信号最干净的 4 题/);
+  assert.match(html, /完整版每维 6 题/);
+});
+
+test('buildStartView 入口卡片的题量说明由真实计数拼出', () => {
+  const html = buildStartView({
+    suite: { dimensions: ITEM_BANK.dimensions, items: [] },
+    suiteIndex: [{
+      id: 'bigfive',
+      name: '开放题版大五人格',
+      tagline: '五个维度各是一条连续谱',
+      dimensionCount: 5,
+      itemCount: 30,
+      coreItemCount: 20,
+    }],
+    selectedId: 'bigfive',
+    health: null,
+    resultCount: 0,
+    mode: 'full',
+  });
+  assert.match(html, /5 维 · 30 题（快速版 20 题）/);
 });
 
 test('buildQuizView 提供跳过入口与已跳过提示', () => {
@@ -494,21 +554,12 @@ test('coverageLine 披露实际作答条数与跳过的题号', () => {
   assert.equal(coverageLine(null), '');
 });
 
-test('decideTransport 按后端可达性选择链路', () => {
-  // 探到后端 → 走后端（访客免登录、无需填 Key）
-  assert.equal(decideTransport({ backendAvailable: true }), 'server');
-  // 探不到后端 → 浏览器直连（访客自带 Key）
-  assert.equal(decideTransport({ backendAvailable: false }), 'direct');
-  // 显式指定优先
-  assert.equal(decideTransport({ forceMode: 'direct', backendAvailable: true }), 'direct');
-  assert.equal(decideTransport({ forceMode: 'server', backendAvailable: false }), 'server');
-  assert.equal(decideTransport({ forceMode: 'local', backendAvailable: false }), 'server');
-});
+
 
 test('buildFinalView 在报告里说明跳过的题', () => {
   const html = buildFinalView({
     final: FINAL_RESULT,
-    itemBank: ITEM_BANK,
+    suite: ITEM_BANK,
     dimensionResults: [{
       ...DIMENSION_RESULT,
       answeredCount: 4,
@@ -530,12 +581,12 @@ test('expectedTypeFrom 由逐维判型结果推出类型字母', () => {
     { dimension: 'T/F', lean: 'T' },
     { dimension: 'J/P', lean: 'J' },
   ];
-  assert.equal(expectedTypeFrom(results), 'ENTJ');
+  assert.equal(expectedTypeFrom(results, ITEM_BANK.dimensions), 'ENTJ');
 
   // 某一维还定不出倾向时，无法判断报告是否过期
   const partial = results.map((r) => (r.dimension === 'T/F' ? { ...r, lean: 'ambiguous' } : r));
-  assert.equal(expectedTypeFrom(partial), '');
-  assert.equal(expectedTypeFrom([]), '');
+  assert.equal(expectedTypeFrom(partial, ITEM_BANK.dimensions), '');
+  assert.equal(expectedTypeFrom([], ITEM_BANK.dimensions), '');
 });
 
 test('buildFinalView 标出大字母与四维读数不一致的旧报告', () => {
@@ -548,12 +599,12 @@ test('buildFinalView 标出大字母与四维读数不一致的旧报告', () =>
   ];
   const html = buildFinalView({
     final: stale,
-    itemBank: ITEM_BANK,
+    suite: ITEM_BANK,
     dimensionResults: results,
     error: null,
     errorBanner: '',
   });
-  assert.match(html, /类型字母与四维读数不一致/);
+  assert.match(html, /字母与各维读数不一致/);
   assert.match(html, /逐维判型指向 ENTJ/);
   assert.match(html, /id="re-finalize-btn"/);
 });
@@ -567,10 +618,10 @@ test('buildFinalView 在报告与逐维结论一致时不给出告警', () => {
   ];
   const html = buildFinalView({
     final: { ...FINAL_RESULT, type: 'ISFP' },
-    itemBank: ITEM_BANK,
+    suite: ITEM_BANK,
     dimensionResults: results,
     error: null,
     errorBanner: '',
   });
-  assert.ok(!html.includes('类型字母与四维读数不一致'), '一致的报告不应出现告警');
+  assert.ok(!html.includes('字母与各维读数不一致'), '一致的报告不应出现告警');
 });

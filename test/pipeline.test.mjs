@@ -17,9 +17,11 @@ import { scoreDimension, finalizeReport, polesByDimension } from '../public/lib/
 import { buildScoreMessages } from '../public/lib/prompts.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const BANK = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'public', 'items.json'), 'utf8'));
+const BANK = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'public', 'suites', 'mbti.json'), 'utf8'));
 
 const EI_ITEMS = BANK.items.filter((i) => i.dimension === 'E/I');
+const EI_META = BANK.dimensions.find((d) => d.key === 'E/I');
+const DIMENSIONS = BANK.dimensions;
 
 const EI_ANSWERS = [
   { itemId: 'EI-01', text: '上次年会散场，我在车上还想给同事回消息，兴奋得睡不着。' },
@@ -63,6 +65,7 @@ test('scoreDimension 走完模型调用并校验引文', async () => {
 
   const result = await scoreDimension({
     dimension: 'E/I',
+    dimensionMeta: EI_META,
     answers: EI_ANSWERS,
     items: EI_ITEMS,
     client,
@@ -105,7 +108,7 @@ test('finalizeReport 按逐维倾向拼出类型，不采信模型写错的 type
     { dimension: 'J/P', lean: 'J', score: 0.3, evidence: [], counterEvidence: [] },
   ];
 
-  const result = await finalizeReport({ dimensionResults, client, onNote: (m) => notes.push(m) });
+  const result = await finalizeReport({ dimensionResults, dimensions: DIMENSIONS, client, onNote: (m) => notes.push(m) });
 
   assert.equal(result.type, 'ENTJ');
   assert.deepEqual(result.typeLetters, ['E', 'N', 'T', 'J']);
@@ -137,7 +140,7 @@ test('finalizeReport 小传不合格时重试一次，仍不合格则降级', as
     { dimension: 'E/I', lean: 'I', score: 0.8, evidence: [{ itemId: 'EI-03', quote: '我更想谁也别见', signal: '', strength: 'strong' }], counterEvidence: [] },
   ];
 
-  const result = await finalizeReport({ dimensionResults, client, onNote: (m) => notes.push(m) });
+  const result = await finalizeReport({ dimensionResults, dimensions: DIMENSIONS, client, onNote: (m) => notes.push(m) });
 
   assert.equal(client.calls.length, 2, '首轮不合格应重试一次');
   assert.equal(result.biography.degraded, true, '仍不合格就降级为只拼原话');
@@ -146,7 +149,7 @@ test('finalizeReport 小传不合格时重试一次，仍不合格则降级', as
 });
 
 test('polesByDimension 给出四维两极', () => {
-  const poles = polesByDimension();
+  const poles = polesByDimension(DIMENSIONS);
   assert.deepEqual(poles['E/I'], ['E', 'I']);
   assert.deepEqual(poles['S/N'], ['S', 'N']);
   assert.deepEqual(poles['T/F'], ['T', 'F']);
@@ -156,6 +159,7 @@ test('polesByDimension 给出四维两极', () => {
 test('buildScoreMessages 明确标出跳过的题并禁止为其编造证据', () => {
   const { system, user } = buildScoreMessages({
     dimension: 'E/I',
+    dimensionMeta: EI_META,
     items: EI_ITEMS,
     answers: [
       { itemId: 'EI-01', text: '' },
@@ -187,6 +191,7 @@ test('scoreDimension 把跳过的题记入证据缺口并记录作答条数', as
 
   const result = await scoreDimension({
     dimension: 'E/I',
+    dimensionMeta: EI_META,
     answers: [
       { itemId: 'EI-01', text: '' },
       { itemId: 'EI-03', text: '一个人待了一整天之后，我更想谁也别见。' },

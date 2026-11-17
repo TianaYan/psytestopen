@@ -1,13 +1,14 @@
-/* 开放题版 MBTI —— 前端状态机与渲染。
+/* 开放题版人格测评 —— 前端状态机与渲染。
  *
  * 交互流程：填完一维 → 点提交 → 立即跳到下一维作答，本维判型在后台并行计算；
- *          四维都提交后进入汇总页，一次性展示类型、四维结果、证据、小传与引证表。
+ *          所有维都提交后进入汇总页，一次性展示倾向字母、各维结果、证据、小传与引证表。
  *
- * 运行模式（同一份代码，两种部署）：
- *  - local  ：本机跑 server.mjs。判型请求走同源 /api/*，密钥留在服务端，浏览器拿不到。
- *  - direct ：GitHub Pages 等纯静态部署。没有后端，访客填自己的 MiniMax Key，
- *             由浏览器直接调 API（该端点支持 CORS）。密钥只存在访客的浏览器里，
- *             仓库与页面上都没有密钥。判型规则与服务端共用 public/lib 下的同一份实现。
+ * 运行模式：**一律浏览器直连**，访客自带 API Key。
+ * 无论页面是从本机服务打开、还是从 GitHub Pages 打开，行为完全一致——
+ * 密钥只存在访客自己的浏览器里，页面与仓库都不含任何凭据。
+ *
+ * 套件化：题库、维度、透镜都随套件走（public/suites/<id>.json），
+ * 引擎（public/lib/）对所有套件共用；新增测试 = 加一个套件文件。
  *
  * 视图构造器（build*View）是纯函数：只依赖入参、只返回 HTML 字符串，
  * 因此可以在 Node 里直接 import 做回归测试（见 test/views.test.mjs）。
@@ -28,34 +29,13 @@ const DEFAULT_API_CFG = {
   protocol: 'openai',
 };
 
-const HAS_BROWSER = typeof location !== 'undefined';
-const FORCE_MODE = HAS_BROWSER ? new URLSearchParams(location.search).get('mode') : null;
-
 /**
- * 判型走哪条链路：
- *   'server' —— 请求打到后端 /api/*，密钥由服务端保管，访客无需登录、无需填 Key；
- *   'direct' —— 浏览器直连模型 API，访客自带 Key（纯静态部署，如 GitHub Pages）。
+ * 判型链路：**一律浏览器直连**，访客自带 API Key。
  *
- * 默认由「后端是否可达」决定，而不是看域名——因为前端与后端可能同源部署，
- * 也可能分属两个域名（Pages + 公网 API）。
- * ?mode=direct / ?mode=server 可强制指定，便于本地验证。
+ * 无论页面是从本机服务打开、还是从 GitHub Pages 打开，行为完全一致——
+ * 密钥只存在访客自己的浏览器里，页面与仓库都不含任何凭据。
  */
-export function decideTransport({ forceMode = null, backendAvailable = false } = {}) {
-  if (forceMode === 'direct') return 'direct';
-  if (forceMode === 'server' || forceMode === 'local') return 'server';
-  return backendAvailable ? 'server' : 'direct';
-}
-
-let transport = 'server';
-
-/** 当前链路：'server'（走后端）或 'direct'（浏览器直连）。 */
-export function currentTransport() {
-  return transport;
-}
-
-export function isDirect() {
-  return transport === 'direct';
-}
+export const TRANSPORT = 'direct';
 
 /** 直连模式下的接口配置，允许访客覆盖端点与模型。 */
 function loadApiCfg() {
@@ -96,20 +76,43 @@ function directClient() {
 }
 
 
-const DIM_LABEL = {
-  'E/I': '能量朝向',
-  'S/N': '信息摄取',
-  'T/F': '决策方式',
-  'J/P': '生活节奏',
-};
+/* ---------- 套件（测试）---------- */
 
-const DIM_ORDER = ['E/I', 'S/N', 'T/F', 'J/P'];
+/** 当前套件的维度列表；未载入时为空。 */
+export function currentDimensions() {
+  return (state.suite && state.suite.dimensions) || [];
+}
+
+/** 当前套件的维度 key 顺序。 */
+export function dimKeys() {
+  return currentDimensions().map((d) => d.key);
+}
+
+/** 某个维度的元信息（label / poles / 透镜）。 */
+export function dimMeta(key) {
+  return currentDimensions().find((d) => d.key === key) || null;
+}
+
+/** 维度的人类可读名。 */
+export function dimLabel(key) {
+  const meta = dimMeta(key);
+  return meta ? meta.label : key;
+}
+
+/** 维度两极的可读名（[极A, 极B]）。 */
+export function dimPoleLabels(key) {
+  const meta = dimMeta(key);
+  return (meta && meta.poleLabels) || [];
+}
 
 export const state = {
   stage: 'start',      // start | quiz | generating | final
   dimIndex: 0,
   itemIndex: 0,
   mode: 'full',        // full（每维 6 题）| quick（每维 4 题，只取 core 层）
+  suiteId: 'mbti',     // 当前选中的测试套件
+  suite: null,         // 载入的套件（题库 + 维度 + 透镜）
+  suiteIndex: [],      // 可选套件目录
   answers: {},         // dimension -> { itemId: { text, checked[] } }
   skipped: {},         // dimension -> [itemId]（受测者主动跳过的题）
   results: [],         // 已完成的维度判型结果
@@ -120,7 +123,6 @@ export const state = {
   error: null,
 };
 
-let bank = null;
 let health = null;
 let dom = null;
 
@@ -145,12 +147,12 @@ export function esc(value) {
 }
 
 function currentDimension() {
-  return DIM_ORDER[state.dimIndex] || DIM_ORDER[0];
+  return dimKeys()[state.dimIndex] || dimKeys()[0];
 }
 
 function itemsOf(dimension) {
-  if (!bank) return [];
-  const list = bank.items.filter((item) => item.dimension === dimension);
+  if (!state.suite) return [];
+  const list = state.suite.items.filter((item) => item.dimension === dimension);
   // 快速版只问每维信号最干净的 4 题（core 层），扩展层留给完整版。
   if (state.mode === 'quick') return list.filter((item) => item.tier === 'core');
   return list;
@@ -174,6 +176,7 @@ export function saveDraft() {
       dimIndex: state.dimIndex,
       itemIndex: state.itemIndex,
       mode: state.mode,
+      suiteId: state.suiteId,
       answers: state.answers,
       skipped: state.skipped,
       results: state.results,
@@ -197,6 +200,7 @@ export function loadDraft() {
       dimIndex: Number(parsed.dimIndex) || 0,
       itemIndex: Number(parsed.itemIndex) || 0,
       mode: parsed.mode === 'quick' ? 'quick' : 'full',
+      suiteId: parsed.suiteId || 'mbti',
       answers: parsed.answers || {},
       skipped: parsed.skipped || {},
       results: Array.isArray(parsed.results) ? parsed.results : [],
@@ -219,18 +223,18 @@ export function normalizeState() {
 
   if (!validStages.includes(state.stage)) {
     if (state.final) state.stage = 'final';
-    else if (state.results.length >= DIM_ORDER.length) state.stage = 'generating';
+    else if (state.results.length >= dimKeys().length) state.stage = 'generating';
     else state.stage = state.results.length ? 'quiz' : 'start';
   }
 
   if (state.stage === 'quiz') {
-    const nextMissing = DIM_ORDER.findIndex((d) => !state.results.some((r) => r.dimension === d));
+    const nextMissing = dimKeys().findIndex((d) => !state.results.some((r) => r.dimension === d));
     if (nextMissing !== -1 && nextMissing !== state.dimIndex) {
       state.dimIndex = nextMissing;
       state.itemIndex = 0;
     }
     // 题数随版本变化（完整版 6 题 / 快速版 4 题），别让游标落在范围外
-    const total = itemsOf(DIM_ORDER[state.dimIndex]).length;
+    const total = itemsOf(dimKeys()[state.dimIndex]).length;
     if (total > 0 && state.itemIndex > total - 1) state.itemIndex = total - 1;
     if (state.itemIndex < 0) state.itemIndex = 0;
   }
@@ -246,8 +250,9 @@ export function normalizeState() {
  * 由已有的单维判型结果推出应有的类型字母。
  * 某一维还定不出倾向时返回空串——此时无法断定报告是否过期。
  */
-export function expectedTypeFrom(results) {
-  const letters = DIM_ORDER.map((key) => {
+export function expectedTypeFrom(results, dimensions = []) {
+  const letters = dimensions.map((d) => {
+    const key = d.key;
     const hit = (results || []).find((r) => r.dimension === key);
     return hit && hit.lean && hit.lean !== 'ambiguous' ? hit.lean : '';
   });
@@ -286,32 +291,51 @@ export function bindRestart(button) {
 /* ---------- API ---------- */
 
 /**
- * 单维判型。local 模式走同源服务端；direct 模式由浏览器直连 API。
- * 两条路径调用的是同一份 public/lib/pipeline.js，结果口径一致。
+ * 组装单维判型的调用参数（纯函数，不含 client）。
+ *
+ * 透镜（dimensionMeta.lens）与本题维题目必须一起交给 pipeline：
+ * 漏传 dimensionMeta 会在运行时抛"维度缺少透镜定义"，四维全灭。
+ * 抽成纯函数是为了让这类漏参能在离线测试里被直接断言（见 test/suites.test.mjs）。
  */
-async function requestScore(dimension, answers, skipped = []) {
-  if (isDirect()) {
-    return scoreDimension({
-      dimension,
-      answers,
-      skipped,
-      items: itemsOf(dimension),
-      client: directClient(),
-    });
-  }
-  return postJSON('api/score', { dimension, answers, skipped });
+export function scoreCallArgs(dimension, answers = [], skipped = []) {
+  return {
+    dimension,
+    dimensionMeta: dimMeta(dimension),
+    answers,
+    skipped,
+    items: itemsOf(dimension),
+  };
 }
 
-/** 合成最终画像。同样两种路径。 */
+/**
+ * 组装汇总合成的调用参数（纯函数）。
+ * dimensions 决定计分轴、类型字母的拼法与引文校验口径，必须随套件走。
+ */
+export function finalizeCallArgs(dimensionResults = []) {
+  return {
+    dimensionResults,
+    dimensions: currentDimensions(),
+  };
+}
+
+/**
+ * 单维判型：浏览器直连模型 API，访客自带 Key。
+ * 与服务端共用 public/lib/pipeline.js 的判型实现，结果口径一致。
+ */
+async function requestScore(dimension, answers, skipped = []) {
+  return scoreDimension({
+    ...scoreCallArgs(dimension, answers, skipped),
+    client: directClient(),
+  });
+}
+
+/** 合成最终画像。同样浏览器直连。 */
 async function requestFinalize(dimensionResults) {
-  if (isDirect()) {
-    return finalizeReport({
-      dimensionResults,
-      client: directClient(),
-      onNote: (message) => console.info('[mbti-open]', message),
-    });
-  }
-  return postJSON('api/finalize', { dimensionResults });
+  return finalizeReport({
+    ...finalizeCallArgs(dimensionResults),
+    client: directClient(),
+    onNote: (message) => console.info('[mbti-open]', message),
+  });
 }
 
 export async function postJSON(url, payload) {
@@ -338,8 +362,11 @@ export async function postJSON(url, payload) {
 
 /* ---------- 视图构造器（纯函数） ---------- */
 
-export function buildStatusStrip({ results = [], pending = {}, errors = {}, dimIndex = 0 } = {}) {
-  const items = DIM_ORDER.map((dimension, index) => {
+export function buildStatusStrip({
+  results = [], pending = {}, errors = {}, dimIndex = 0, dimensions = [],
+} = {}) {
+  const items = dimensions.map((d, index) => {
+    const dimension = d.key;
     const done = results.some((r) => r.dimension === dimension);
     const isPending = Boolean(pending[dimension]);
     const failed = Boolean(errors[dimension]);
@@ -370,7 +397,7 @@ export function buildKeyPanel({ hasKey = false, endpoint = '', model = '' } = {}
     <div class="key-panel">
       <h2 class="key-panel__title">这个页面需要你自己的 API Key</h2>
       <p class="small">
-        静态部署没有后端，判型请求由<b>你的浏览器</b>直接发往 <code>${esc(endpoint)}</code>（模型 ${esc(model)}）。
+        判型请求由<b>你的浏览器</b>直接发往 <code>${esc(endpoint)}</code>（模型 ${esc(model)}）。
         Key 只保存在这台设备上（浏览器 localStorage）——页面、代码仓库和 GitHub 上都没有密钥，
         仓库里也不存在任何凭据。
       </p>
@@ -390,64 +417,115 @@ export function buildKeyPanel({ hasKey = false, endpoint = '', model = '' } = {}
     </div>`;
 }
 
+/**
+ * 开始页：先是**测试入口列表**（选一个测什么），再是当前测试的版本与密钥设置。
+ */
+/**
+ * 入口卡片的题量说明。
+ * 只用 index.json 里的真实计数（维度数 / 题数 / core 题数）拼出来，
+ * 不接受手写字符串——手写的数字一旦和套件文件脱节，页面就会说谎。
+ */
+export function suiteCardMeta(entry) {
+  const dims = Number(entry?.dimensionCount) || 0;
+  const items = Number(entry?.itemCount) || 0;
+  const core = Number(entry?.coreItemCount) || 0;
+  if (!dims || !items) return String(entry?.meta || '');
+  return `${dims} 维 · ${items} 题（快速版 ${core} 题）`;
+}
+
 export function buildStartView({
-  bank: itemBank, health: itemHealth, resultCount = 0, keyPanel = '', direct = false,
+  suite: itemSuite, suiteIndex = [], selectedId = '', health: itemHealth,
+  resultCount = 0, keyPanel = '', direct = false,
   mode = 'full', modeSelectable = true,
 } = {}) {
   const healthLine = direct
-    ? `<span class="small">静态直连模式 · 浏览器直接调用 API · 密钥只存在你的浏览器里</span>`
+    ? `<span class="small">浏览器直连模式 · 判型请求由你的浏览器直接发往 API · 密钥只存在你的浏览器里</span>`
     : itemHealth
       ? (itemHealth.keyConfigured
         ? `<span class="small">服务端已就绪 · 模型 ${esc(itemHealth.model)} · 端点 ${esc(itemHealth.endpointHost)} · 密钥由服务端保管，你无需填写</span>`
         : `<span class="small" style="color:var(--warn-ink)">服务端未找到可用凭证，判型会失败：${esc(itemHealth.model || '模型未配置')}</span>`)
       : '<span class="small">正在检查服务状态…</span>';
 
-  const allItems = itemBank ? itemBank.items : [];
+  const allItems = itemSuite ? itemSuite.items : [];
   const coreItems = allItems.filter((i) => i.tier === 'core');
   const isQuick = mode === 'quick';
-  const perDimension = isQuick ? 4 : 6;
-  const total = isQuick ? (coreItems.length || 16) : (allItems.length || 24);
-  const count = allItems.length || 24;
+  const dims = itemSuite ? itemSuite.dimensions.length : 0;
+  // 两个版本的每维题量必须各自独立算，不能跟着"当前选中的是哪个版本"走：
+  // 否则完整版会用完整版的题数去渲染快速版卡片，显示成"每维 8 题"这类错数。
+  const perDimensionCore = dims ? Math.round(coreItems.length / dims) : 0;
+  const perDimensionFull = dims ? Math.round(allItems.length / dims) : 0;
+  const perDimension = isQuick ? perDimensionCore : perDimensionFull;
+  const extraPerDimension = Math.max(0, perDimensionFull - perDimensionCore);
+  const total = isQuick ? coreItems.length : allItems.length;
+  const count = allItems.length;
+
+  // 测试入口列表
+  const entryPanel = suiteIndex.length
+    ? `<div class="suite-panel">
+        <h2 class="suite-panel__title">选一个测什么</h2>
+        <div class="suite-panel__row">
+          ${suiteIndex.map((entry) => `
+            <button type="button" class="suite-card${entry.id === selectedId ? ' suite-card--on' : ''}"
+                    data-suite="${esc(entry.id)}">
+              <span class="suite-card__title">${esc(entry.name)}</span>
+              <span class="suite-card__meta">${esc(suiteCardMeta(entry))}</span>
+              <span class="suite-card__note">${esc(entry.tagline || '')}</span>
+            </button>`).join('')}
+        </div>
+      </div>`
+    : '';
+
+  const suiteIntro = itemSuite
+    ? `<div class="notice notice--calm">
+        <b>${esc(itemSuite.name)}</b> — ${esc(itemSuite.intro || '')}
+      </div>`
+    : '';
 
   const modePanel = modeSelectable
     ? `<div class="mode-panel">
         <h2 class="mode-panel__title">这次想花多少时间？</h2>
         <p class="small">
-          两个版本问的是同一批题目，只是数量不同：快速版每个维度只问信号最干净的 4 题，
-          完整版每维 6 题、覆盖的行为侧面更全。哪个维度写不出来都可以<b>跳过</b>，
+          两个版本问的是同一批题目，只是数量不同：快速版每个维度只问信号最干净的 ${perDimensionCore} 题，
+          完整版每维 ${perDimensionFull} 题、覆盖的行为侧面更全。哪个维度写不出来都可以<b>跳过</b>，
           跳过的题会在报告里如实记成证据缺口，而不是悄悄消失。
         </p>
         <div class="mode-panel__row">
           <button type="button" class="mode-card${isQuick ? '' : ' mode-card--on'}" data-mode="full">
             <span class="mode-card__title">完整版</span>
-            <span class="mode-card__meta">每维 6 题 · 共 ${count} 题 · 约 15–20 分钟</span>
+            <span class="mode-card__meta">每维 ${perDimensionFull} 题 · 共 ${count} 题</span>
             <span class="mode-card__note">证据最厚，反向证据最容易浮出来</span>
           </button>
           <button type="button" class="mode-card${isQuick ? ' mode-card--on' : ''}" data-mode="quick">
             <span class="mode-card__title">快速版</span>
-            <span class="mode-card__meta">每维 4 题 · 共 ${coreItems.length || 16} 题 · 约 10–13 分钟</span>
-            <span class="mode-card__note">省三分之一时间，每维少两个行为侧面</span>
+            <span class="mode-card__meta">每维 ${perDimensionCore} 题 · 共 ${coreItems.length} 题</span>
+            <span class="mode-card__note">省三分之一时间，每维少 ${extraPerDimension} 个行为侧面</span>
           </button>
         </div>
       </div>`
-    : `<p class="small">本次为${isQuick ? '快速版（每维 4 题）' : '完整版（每维 6 题）'}。想换版本请点右上角"重新开始"。</p>`;
+    : `<p class="small">本次为${isQuick ? `快速版（每维 ${perDimensionCore} 题）` : `完整版（每维 ${perDimensionFull} 题）`}。想换版本请点右上角"重新开始"。</p>`;
+
+  const dimNames = itemSuite ? itemSuite.dimensions.map((d) => d.key).join('、') : '';
 
   return `
-    <p class="kicker">开放题版 MBTI</p>
+    <p class="kicker">开放题式人格测评</p>
     <h1>把选择题换成你自己写的场景</h1>
     <p class="lede">
-      传统量表让你在若干选项里挑一个最像的。这份测试反过来：每一题给你一个情境框定，
+      传统量表让你在若干选项里挑一个最像的。这一套测试反过来：每一题给你一个情境框定，
       你写下自己在类似情境下<b>可能产生的行为与想法</b>。模型读的是你的原话，
       按量表原有的维度框架给出倾向、置信度和一份能追溯到原句的人物小传。
     </p>
 
     <div class="section-rule"></div>
 
+    ${entryPanel}
+
+    ${suiteIntro}
+
     <ul class="fact-list">
-      <li><span class="k">题量</span><span>${isQuick ? '快速版' : '完整版'}共 ${total} 道开放情境题，分 4 组，每组 ${perDimension} 题，对应 E/I、S/N、T/F、J/P 四个维度。</span></li>
+      <li><span class="k">题量</span><span>${isQuick ? '快速版' : '完整版'}共 ${total} 道开放情境题，分 ${dims} 组，每组 ${perDimension} 题，对应 ${esc(dimNames)} 几个维度。</span></li>
       <li><span class="k">节奏</span><span>每组约 ${isQuick ? '2–3' : '3–5'} 分钟。提交一组后立刻进入下一组，上一组的判型在后台并行计算。</span></li>
       <li><span class="k">证据</span><span>画像里的每一条判断都必须引用你的原话；引文对不上的会被丢弃，该维置信度随之下调。</span></li>
-      <li><span class="k">产出</span><span>四维读数与全部证据、四字母类型、可回查的引证表，以及一份逐段带引文的人物小传。</span></li>
+      <li><span class="k">产出</span><span>各维读数与全部证据、倾向类型、可回查的引证表，以及一份逐段带引文的人物小传。</span></li>
     </ul>
 
     <div class="section-rule"></div>
@@ -479,7 +557,7 @@ export function buildQuizView({
   isLastDimension = false, error = null, statusStrip = '', errorBanner = '',
   skipped = false,
 } = {}) {
-  const alt = DIM_ORDER.indexOf(dimension) % 2 === 1;
+  const alt = dimKeys().indexOf(dimension) % 2 === 1;
   const skipBanner = skipped
     ? `<div class="notice notice--calm">
         <b>本题已跳过。</b>没有作答材料，报告会把它记成证据缺口，不会替你猜。
@@ -492,7 +570,7 @@ export function buildQuizView({
 
     <div class="quiz-head">
       <span class="dimension-tag${alt ? ' dimension-tag--alt' : ''}">本题关注维度 · ${esc(dimension)}</span>
-      <span class="small">${esc(DIM_LABEL[dimension] || '')} · 第 ${itemIndex + 1} / ${total} 题</span>
+      <span class="small">${esc(dimLabel(dimension))} · 第 ${itemIndex + 1} / ${total} 题</span>
     </div>
 
     <h2 class="prompt">${esc(item.prompt)}</h2>
@@ -528,15 +606,16 @@ export function buildQuizView({
   `;
 }
 
-export function buildGeneratingView({ statusStrip = '', errorBanner = '', error = null } = {}) {
+export function buildGeneratingView({ statusStrip = '', errorBanner = '', error = null, dimensionCount = 0 } = {}) {
+  const dims = dimensionCount > 0 ? dimensionCount : 4;
   return `
     ${statusStrip}
     ${errorBanner}
 
     <p class="kicker">生成中</p>
-    <h1>正在收束四个维度的判型结果</h1>
+    <h1>正在收束${dims}个维度的判型结果</h1>
     <p class="lede">
-      每个维度的判型在后台独立进行，互不阻塞。四维结果齐备后会自动合成类型与人物小传。
+      每个维度的判型在后台独立进行，互不阻塞。${dims}个维度的结果齐备后会自动合成倾向读数与人物小传。
     </p>
 
     <div class="section-rule"></div>
@@ -629,23 +708,27 @@ export function readoutOf(dim, poles = []) {
 }
 
 export function buildFinalView({
-  final, itemBank: itemBankData, dimensionResults = [], error = null, errorBanner = '',
+  final, suite: suiteData = null, dimensionResults = [], error = null, errorBanner = '',
 } = {}) {
   if (!final) {
     return `${errorBanner}<div class="notice">还没有生成最终画像。</div>`;
   }
 
   const letters = String(final.type || '').split('');
-  const poleNames = {
-    E: '外向', I: '内向',
-    S: '实感', N: '直觉',
-    T: '思考', F: '情感',
-    J: '判断', P: '知觉',
-  };
+  const suiteKeys = (suiteData?.dimensions || []).map((d) => d.key);
 
+  const metaOf = (key) => (suiteData?.dimensions || []).find((d) => d.key === key) || null;
   const poleOf = (key) => {
-    const meta = itemBankData?.dimensions?.find((d) => d.key === key);
+    const meta = metaOf(key);
     return meta ? meta.poles : [];
+  };
+  /** 某个极的可读名。 */
+  const poleNameOf = (key, letter) => {
+    const meta = metaOf(key);
+    if (!meta) return '';
+    const labels = meta.poleLabels || [];
+    const at = (meta.poles || []).indexOf(letter);
+    return at === -1 ? '' : (labels[at] || '');
   };
   const scoredOf = (key) => (dimensionResults || []).find((r) => r.dimension === key);
 
@@ -653,7 +736,7 @@ export function buildFinalView({
   // 因此在字母下方直接标注，避免读者以为该维度证据充分。
   const typeHTML = letters.length
     ? `<div class="type-display">${letters.map((letter, index) => {
-      const key = DIM_ORDER[index] || '';
+      const key = suiteKeys[index] || '';
       const scored = scoredOf(key);
       const flag = scored && scored.lean === 'ambiguous'
         ? `<span class="type-letter__flag">该维度证据不足</span>`
@@ -661,18 +744,18 @@ export function buildFinalView({
       return `
         <div class="type-letter">
           ${esc(letter)}
-          <span class="type-letter__pole">${esc(key)} ${esc(poleNames[letter] || '')}</span>
+          <span class="type-letter__pole">${esc(key)} ${esc(poleNameOf(key, letter))}</span>
           ${flag}
         </div>`;
     }).join('')}</div>`
-    : '<div class="notice">未能确定类型字母。</div>';
+    : '<div class="notice">未能确定各维倾向字母。</div>';
 
   const finalByDim = new Map((final.dimensions || []).map((d) => [d.dimension, d]));
 
   // 四维读数：以单维判型（引文已逐条校验）为主，汇总阶段读数作为补充。
   // 两阶段读数不一致时两个都列出来，而不是只显示其中一个。
-  const dimRows = DIM_ORDER.map((key) => {
-    const meta = itemBankData?.dimensions?.find((d) => d.key === key);
+  const dimRows = suiteKeys.map((key) => {
+    const meta = metaOf(key);
     const poles = poleOf(key);
     const scored = scoredOf(key);
     const summarized = finalByDim.get(key);
@@ -731,9 +814,9 @@ export function buildFinalView({
   // 每个维度的完整判型结果（支撑 / 反向 / 易误读 / 缺口），一并呈现在汇总页。
   const dimensionSections = dimensionResults.length
     ? `<div class="section-rule"></div>
-       <h3>四个维度的判型依据</h3>
+       <h3>${suiteKeys.length}个维度的判型依据</h3>
        ${dimensionResults.map((result) => {
-    const meta = itemBankData?.dimensions?.find((d) => d.key === result.dimension);
+    const meta = metaOf(result.dimension);
     const poles = meta ? meta.poles : [];
     const axis = result.axis || { from: poles[0] || '', to: poles[1] || '' };
     const { lean, strength } = readoutOf(result, poles);
@@ -757,10 +840,10 @@ export function buildFinalView({
 
   // 大字母与四维读数必须同源。草稿里的报告可能是旧算法留下的，
   // 这时明确标出来，而不是让两个读数在页面上互相矛盾。
-  const expectedType = expectedTypeFrom(dimensionResults);
+  const expectedType = expectedTypeFrom(dimensionResults, suiteData?.dimensions || []);
   const inconsistent = Boolean(expectedType) && expectedType !== final.type;
   const inconsistentNotice = inconsistent
-    ? `<div class="notice"><b>这份报告的类型字母与四维读数不一致。</b>
+    ? `<div class="notice"><b>这份报告的字母与各维读数不一致。</b>
         逐维判型指向 ${esc(expectedType)}，而报告顶部写的是 ${esc(final.type)}——
         多半是服务端更新后留下的旧报告。点"重新合成报告"即可按当前判型结果重新生成。</div>`
     : '';
@@ -776,7 +859,7 @@ export function buildFinalView({
     ${typeHTML}
 
     <div class="section-rule"></div>
-    <h3>四维读数</h3>
+    <h3>${suiteKeys.length}维读数</h3>
     <table class="dim-table">
       <thead><tr><th>维度</th><th>倾向</th><th>强度</th><th>置信度</th><th>依据</th></tr></thead>
       <tbody>${dimRows || '<tr><td colspan="5">暂无</td></tr>'}</tbody>
@@ -817,7 +900,7 @@ function mergeResult(result) {
   const index = state.results.findIndex((r) => r.dimension === result.dimension);
   if (index === -1) state.results.push(result);
   else state.results[index] = result;
-  state.results.sort((a, b) => DIM_ORDER.indexOf(a.dimension) - DIM_ORDER.indexOf(b.dimension));
+  state.results.sort((a, b) => dimKeys().indexOf(a.dimension) - dimKeys().indexOf(b.dimension));
 }
 
 /** 后台判型：完成即写入结果，失败即记录错误，都不阻塞作答。 */
@@ -872,7 +955,7 @@ function submitDimension() {
   state.skipped[dimension] = skipped;
   state.error = null;
 
-  if (state.dimIndex < DIM_ORDER.length - 1) {
+  if (state.dimIndex < dimKeys().length - 1) {
     state.dimIndex += 1;
     state.itemIndex = 0;
   } else {
@@ -888,10 +971,10 @@ function maybeFinalize() {
   if (state.stage !== 'generating') return;
   if (Object.keys(state.pending).length) return;
 
-  const missing = DIM_ORDER.filter((d) => !state.results.some((r) => r.dimension === d));
+  const missing = dimKeys().filter((d) => !state.results.some((r) => r.dimension === d));
   if (missing.length) {
     state.stage = 'quiz';
-    state.dimIndex = DIM_ORDER.indexOf(missing[0]);
+    state.dimIndex = dimKeys().indexOf(missing[0]);
     state.itemIndex = 0;
     state.error = `以下维度还没拿到判型结果：${missing.join('、')}。可以点"重试评判"，或回到该维度修改作答。`;
     render();
@@ -925,7 +1008,7 @@ async function finalize() {
 /** 用已有的四维结果重新合成一次报告，不必重答 24 题。 */
 function refinalize() {
   if (state.busy) return;
-  const missing = DIM_ORDER.filter((d) => !state.results.some((r) => r.dimension === d));
+  const missing = dimKeys().filter((d) => !state.results.some((r) => r.dimension === d));
   if (missing.length) {
     state.error = `以下维度还没有判型结果，无法重新合成：${missing.join('、')}。请先补齐或重试评判。`;
     render();
@@ -937,6 +1020,33 @@ function refinalize() {
   finalize();
 }
 
+/* ---------- 套件载入 ---------- */
+
+/** 载入套件目录（开始页的测试入口列表）。 */
+async function loadSuiteIndex() {
+  try {
+    const r = await fetch('suites/index.json', { cache: 'no-store' });
+    if (r.ok) state.suiteIndex = await r.json();
+  } catch (err) {
+    console.warn('套件目录载入失败', err);
+  }
+}
+
+/** 载入一个套件（题库 + 维度 + 透镜）。 */
+async function selectSuite(id) {
+  try {
+    const r = await fetch(`suites/${id}.json`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const suite = await r.json();
+    state.suiteId = suite.id || id;
+    state.suite = suite;
+    return true;
+  } catch (err) {
+    state.error = `套件载入失败：${err.message}`;
+    return false;
+  }
+}
+
 /* ---------- 渲染与事件绑定 ---------- */
 
 function currentStatusStrip() {
@@ -945,6 +1055,7 @@ function currentStatusStrip() {
     pending: state.pending,
     errors: state.errors,
     dimIndex: state.dimIndex,
+    dimensions: currentDimensions(),
   });
 }
 
@@ -966,21 +1077,41 @@ function bindRetryButtons() {
 
 function renderStart() {
   const apiCfg = loadApiCfg();
-  const keyPanel = isDirect()
-    ? buildKeyPanel({
-      hasKey: Boolean(loadApiKey()),
-      endpoint: apiCfg.baseURL,
-      model: apiCfg.model,
-    })
-    : '';
+  const keyPanel = buildKeyPanel({
+    hasKey: Boolean(loadApiKey()),
+    endpoint: apiCfg.baseURL,
+    model: apiCfg.model,
+  });
   dom.view.innerHTML = buildStartView({
-    bank,
+    suite: state.suite,
+    suiteIndex: state.suiteIndex,
+    selectedId: state.suiteId,
     health,
     resultCount: state.results.length,
     keyPanel,
-    direct: isDirect(),
+    direct: true,
     mode: state.mode,
     modeSelectable: state.results.length === 0 && !state.final,
+  });
+
+  dom.view.querySelectorAll('[data-suite]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const id = button.dataset.suite;
+      if (!id || id === state.suiteId) return;
+      const ok = await selectSuite(id);
+      if (!ok) return;
+      state.answers = {};
+      state.skipped = {};
+      state.results = [];
+      state.errors = {};
+      state.pending = {};
+      state.final = null;
+      state.dimIndex = 0;
+      state.itemIndex = 0;
+      state.error = null;
+      saveDraft();
+      render();
+    });
   });
 
   dom.view.querySelectorAll('[data-mode]').forEach((button) => {
@@ -1018,8 +1149,8 @@ function renderStart() {
   });
 
   dom.view.querySelector('#start-btn')?.addEventListener('click', () => {
-    if (isDirect() && !loadApiKey()) {
-      state.error = '静态部署版需要你自己的 API Key：先在上面填一个，再开始作答。';
+    if (!loadApiKey()) {
+      state.error = '这个页面需要你自己的 API Key：先在上面填一个，再开始作答。';
       render();
       return;
     }
@@ -1030,7 +1161,7 @@ function renderStart() {
   });
 
   dom.view.querySelector('#resume-btn')?.addEventListener('click', () => {
-    state.stage = state.final ? 'final' : (state.results.length === DIM_ORDER.length ? 'generating' : 'quiz');
+    state.stage = state.final ? 'final' : (state.results.length === dimKeys().length ? 'generating' : 'quiz');
     render();
     if (state.stage === 'generating') maybeFinalize();
   });
@@ -1060,7 +1191,7 @@ function renderQuiz() {
     total,
     text,
     checked,
-    isLastDimension: state.dimIndex >= DIM_ORDER.length - 1,
+    isLastDimension: state.dimIndex >= dimKeys().length - 1,
     error: state.error,
     statusStrip: currentStatusStrip(),
     errorBanner: currentErrorBanner(),
@@ -1146,6 +1277,7 @@ function renderGenerating() {
     statusStrip: currentStatusStrip(),
     errorBanner: currentErrorBanner(),
     error: state.error,
+    dimensionCount: dimKeys().length,
   });
   bindRetryButtons();
 }
@@ -1153,7 +1285,7 @@ function renderGenerating() {
 function renderFinal() {
   dom.view.innerHTML = buildFinalView({
     final: state.final,
-    itemBank: bank,
+    suite: state.suite,
     dimensionResults: state.results,
     error: state.error,
     errorBanner: currentErrorBanner(),
@@ -1185,7 +1317,7 @@ function renderProgress() {
 }
 
 export function render() {
-  if (!bank) {
+  if (!state.suite) {
     dom.view.innerHTML = '<p class="small">正在载入题库…</p>';
     return;
   }
@@ -1216,35 +1348,24 @@ async function boot() {
   bindRestart(dom.restartBtn);
 
   try {
-    const [bankResponse, healthResponse] = await Promise.all([
-      // 相对路径：GitHub Pages 挂在 /<repo>/ 子路径下，绝对路径会 404
-      fetch('items.json'),
-      fetch('api/health', { cache: 'no-store' }).catch(() => null),
-    ]);
-    if (bankResponse.ok) bank = await bankResponse.json();
-    if (healthResponse && healthResponse.ok) {
-      health = await healthResponse.json().catch(() => null);
-    }
+    // 相对路径：GitHub Pages 挂在 /<repo>/ 子路径下，绝对路径会 404
+    await loadSuiteIndex();
   } catch (err) {
     console.warn('初始化失败', err);
   }
 
-  // 探到后端就走后端（密钥由服务端保管，访客无需登录或填 Key）；
-  // 探不到就走浏览器直连（纯静态部署，访客自带 Key）。
-  transport = decideTransport({
-    forceMode: FORCE_MODE,
-    backendAvailable: Boolean(health && health.ok),
-  });
-
   loadDraft();
+  if (!state.suite || state.suite.id !== state.suiteId) {
+    await selectSuite(state.suiteId || 'mbti');
+  }
   normalizeState();
 
   // 报告顶部的大字母必须与逐维判型结论一致。
   // 服务端换过版本后，草稿里可能还留着旧算法生成的报告，
   // 于是"大字母"和"四维读数"会对不上。这里自动重新合成一次，
   // 用户刷新页面就能拿到一致的结果，不必手动重答。
-  if (state.stage === 'final' && state.final && state.results.length === DIM_ORDER.length) {
-    const expected = expectedTypeFrom(state.results);
+  if (state.stage === 'final' && state.final && state.results.length === dimKeys().length) {
+    const expected = expectedTypeFrom(state.results, currentDimensions());
     if (expected && expected !== state.final.type) {
       state.stage = 'generating';
     }

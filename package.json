@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "开放题版 MBTI：把选择题换成受测者自己写的场景，用本账号 API 逐维判型并生成可溯源的人物小传。",
+  "description": "开放题版人格测评：把选择题换成受测者自己写的场景，用访客自带的 API Key 逐维判型并生成可溯源的人物小传。含 MBTI、大五人格、职业画像、关系与依恋模式四套测试。",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test --test-reporter=spec test/contract.test.mjs test/pipeline.test.mjs test/views.test.mjs"
+    "test": "node --test --test-reporter=spec test/contract.test.mjs test/pipeline.test.mjs test/views.test.mjs test/suites.test.mjs"
   },
   "engines": {
     "node": ">=18"
