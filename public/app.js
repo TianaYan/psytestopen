@@ -21,6 +21,34 @@ const DRAFT_KEY = 'mbti-open-draft';
 const KEY_STORE = 'mbti-open-api-key';
 const CFG_STORE = 'mbti-open-api-cfg';
 
+/** 站点默认标题。必须与 public/index.html 里的 <title> 一致（测试会断言）。 */
+export const DEFAULT_TITLE = '开放题版人格测评 · 行为叙述';
+
+/** 文件名里不能用的字符：Windows 与 Chrome 的「另存为 PDF」都会拒绝或替换它们。 */
+const ILLEGAL_FILENAME_CHARS = /[\\/:*?"<>|]/g;
+
+/**
+ * 打印 / 另存为 PDF 的**默认文件名取自 document.title**，
+ * 所以不同测试必须给出不同的标题——否则四套报告会存成同一个名字。
+ *
+ * 报告页用「套件名 · 倾向画像」，作答页用「套件名 · 作答中」，
+ * 开始页用站点默认标题。
+ */
+export function documentTitleFor(suite, stage = 'start') {
+  const raw = suite && suite.name ? String(suite.name) : '';
+  const name = raw.replace(ILLEGAL_FILENAME_CHARS, ' ').replace(/\s+/g, ' ').trim();
+  if (!name) return DEFAULT_TITLE;
+  if (stage === 'final') return `${name} · 倾向画像`;
+  if (stage === 'start') return DEFAULT_TITLE;
+  return `${name} · 作答中`;
+}
+
+/** 把上面的标题写进 document.title（浏览器环境才有 document）。 */
+function applyDocumentTitle(stage) {
+  if (typeof document === 'undefined') return;
+  document.title = documentTitleFor(state.suite, stage);
+}
+
 /* ---------- 运行模式 ---------- */
 
 const DEFAULT_API_CFG = {
@@ -1293,7 +1321,12 @@ function renderFinal() {
 
   bindRetryButtons();
 
-  dom.view.querySelector('#print-btn')?.addEventListener('click', () => window.print());
+  dom.view.querySelector('#print-btn')?.addEventListener('click', () => {
+    // 再设一次：保证打印对话框里的默认文件名就是这套测试的名字，
+    // 而不是四套测试共用的站点标题。
+    applyDocumentTitle('final');
+    window.print();
+  });
   dom.view.querySelector('#re-finalize-btn')?.addEventListener('click', () => {
     refinalize();
   });
@@ -1321,6 +1354,8 @@ export function render() {
     dom.view.innerHTML = '<p class="small">正在载入题库…</p>';
     return;
   }
+  // 标题跟着套件走：打印 / 另存为 PDF 的默认文件名取自 document.title。
+  applyDocumentTitle(state.stage);
   renderProgress();
 
   if (state.busy) {

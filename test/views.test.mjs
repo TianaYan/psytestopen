@@ -7,6 +7,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   buildStartView,
@@ -22,7 +25,11 @@ import {
   coverageLine,
   state,
   esc,
+  documentTitleFor,
+  DEFAULT_TITLE,
 } from '../public/app.js';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const LT = String.fromCharCode(60);
 const GT = String.fromCharCode(62);
@@ -491,6 +498,42 @@ test('buildStartView 的两张版本卡题量与套件实际题量一致（与�
   const html = buildStartView({ suite: four, health: null, resultCount: 0, mode: 'full' });
   assert.match(html, /快速版每个维度只问信号最干净的 4 题/);
   assert.match(html, /完整版每维 6 题/);
+});
+
+/**
+ * 打印 / 另存为 PDF 的默认文件名取自 document.title。
+ * 四套测试必须给出不同的标题，否则报告都存成同一个名字。
+ */
+test('打印 / 另存为 PDF 的文件名按套件区分', () => {
+  const suites = [
+    { name: '开放题版 MBTI' },
+    { name: '开放题版大五人格' },
+    { name: '开放题版职业画像' },
+    { name: '开放题版关系与依恋模式' },
+  ];
+
+  const titles = suites.map((suite) => documentTitleFor(suite, 'final'));
+  assert.equal(new Set(titles).size, suites.length, '四套测试的打印文件名不能相同');
+  assert.equal(titles[0], '开放题版 MBTI · 倾向画像');
+  assert.equal(titles[1], '开放题版大五人格 · 倾向画像');
+
+  // 作答页也带上套件名，免得多个标签页分不清
+  assert.equal(documentTitleFor(suites[1], 'quiz'), '开放题版大五人格 · 作答中');
+  // 开始页用站点默认标题
+  assert.equal(documentTitleFor(suites[0], 'start'), DEFAULT_TITLE);
+  // 没有套件时兜底成默认标题
+  assert.equal(documentTitleFor(null, 'final'), DEFAULT_TITLE);
+
+  // 文件名里的非法字符必须被清掉（Windows 与 Chrome 另存为 PDF 都会拒绝）
+  const dirty = documentTitleFor({ name: 'A/B:C*D?E' }, 'final');
+  assert.ok(!/[\\/:*?"<>|]/.test(dirty), `文件名里仍含非法字符：${dirty}`);
+});
+
+test('默认标题与 index.html 的 <title> 一致', () => {
+  const html = fs.readFileSync(path.join(HERE, '..', 'public', 'index.html'), 'utf8');
+  const matched = html.match(/<title>([^<]+)<\/title>/);
+  assert.ok(matched, 'index.html 缺少 <title>');
+  assert.equal(matched[1].trim(), DEFAULT_TITLE, 'app.js 的默认标题与 index.html 不一致');
 });
 
 test('buildStartView 入口卡片的题量说明由真实计数拼出', () => {
