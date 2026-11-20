@@ -555,6 +555,53 @@ test('buildStartView 入口卡片的题量说明由真实计数拼出', () => {
   assert.match(html, /5 维 · 30 题（快速版 20 题）/);
 });
 
+/**
+ * 访客没有 API Key 时也要能看到东西：
+ * 开始页给每个套件一个「看示例报告」入口，并说明「这个测试在测什么」。
+ */
+test('buildStartView 提供示例报告入口与「测什么」说明块', () => {
+  const suite = {
+    id: 'mbti',
+    name: '开放题版 MBTI',
+    about: '测的是四个经典维度上的行为倾向。',
+    dimensions: [
+      { key: 'E/I', label: '能量朝向', poles: ['E', 'I'], poleLabels: ['外向', '内向'], summary: '与人共处后是被充电还是被消耗。' },
+    ],
+    items: [],
+  };
+  const html = buildStartView({
+    suite,
+    suiteIndex: [{ id: 'mbti', name: '开放题版 MBTI', tagline: '四个维度', dimensionCount: 4, itemCount: 24, coreItemCount: 16 }],
+    selectedId: 'mbti',
+    health: null,
+    resultCount: 0,
+    mode: 'full',
+  });
+
+  assert.match(html, /data-sample="mbti"/, '每个套件都要有示例报告入口');
+  assert.match(html, /看一份示例报告/, '示例报告入口要有文字');
+  assert.match(html, /这个测试在测什么/, '要有「测什么」说明块');
+  assert.match(html, /测的是四个经典维度上的行为倾向/, '说明块要显示套件的 about');
+  assert.match(html, /能量朝向/, '说明块要列出维度');
+  assert.match(html, /外向 ↔ 内向/, '说明块要列出维度的两极');
+  assert.match(html, /与人共处后是被充电还是被消耗/, '说明块要显示维度摘要');
+});
+
+test('buildFinalView 的示例模式不提供重新合成与重新开始', () => {
+  const html = buildFinalView({
+    final: FINAL_RESULT,
+    suite: ITEM_BANK,
+    dimensionResults: [DIMENSION_RESULT],
+    error: null,
+    errorBanner: '',
+    sampleMode: true,
+  });
+  assert.match(html, /id="print-btn"/, '示例报告也要能打印');
+  assert.match(html, /id="sample-back-btn"/, '示例报告要有回到开始页的出口');
+  assert.ok(!html.includes('id="re-finalize-btn"'), '示例报告不能触发重新合成（那会真的调模型）');
+  assert.ok(!html.includes('id="restart-btn-2"'), '示例报告不能触发重新开始（那会清掉访客草稿）');
+});
+
 test('buildQuizView 提供跳过入口与已跳过提示', () => {
   const html = buildQuizView({
     dimension: 'E/I',

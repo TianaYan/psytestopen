@@ -18,12 +18,14 @@ import { fileURLToPath } from 'node:url';
 
 import { state, scoreCallArgs, finalizeCallArgs } from '../public/app.js';
 import { scoreDimension, finalizeReport } from '../public/lib/pipeline.js';
+import { quoteTraceable } from '../public/lib/validate.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SUITES_DIR = path.join(HERE, '..', 'public', 'suites');
 
 const INDEX = JSON.parse(fs.readFileSync(path.join(SUITES_DIR, 'index.json'), 'utf8'));
 const FILES = fs.readdirSync(SUITES_DIR).filter((f) => f.endsWith('.json') && f !== 'index.json');
+const SAMPLES_DIR = path.join(HERE, '..', 'public', 'samples');
 
 function loadSuite(id) {
   return JSON.parse(fs.readFileSync(path.join(SUITES_DIR, `${id}.json`), 'utf8'));
@@ -65,6 +67,51 @@ test('入口目录里的题量与套件文件一致', () => {
     assert.equal(entry.dimensionCount, suite.dimensions.length, `${entry.id} 维度数对不上`);
     assert.equal(entry.itemCount, suite.items.length, `${entry.id} 题量对不上`);
     assert.equal(entry.coreItemCount, core, `${entry.id} 快速版题量对不上`);
+  }
+});
+
+test('每个套件都写明了「测什么、不测什么」', () => {
+  for (const entry of INDEX) {
+    const suite = loadSuite(entry.id);
+    assert.ok(suite.about && suite.about.length > 30, `${entry.id} 缺 about 说明`);
+    assert.ok(suite.intro && suite.intro.length > 30, `${entry.id} 缺 intro 说明`);
+  }
+});
+
+/**
+ * 示例报告：访客没有 API Key 时也能看到一份完整报告。
+ * 它是预置的真实产出，所以必须自带维度元信息（不依赖当前选中的套件），
+ * 且每条引文都要能回查到作答原文。
+ */
+test('每个套件都有一份可离线渲染的示例报告', () => {
+  for (const entry of INDEX) {
+    const file = path.join(SAMPLES_DIR, `${entry.id}.json`);
+    assert.ok(fs.existsSync(file), `${entry.id} 缺示例报告`);
+
+    const sample = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(sample.suite, entry.id);
+    assert.ok(sample.suiteMeta && sample.suiteMeta.dimensions.length > 0, `${entry.id} 示例报告缺维度元信息`);
+    assert.equal(sample.suiteMeta.dimensions.length, entry.dimensionCount, `${entry.id} 示例报告维度数对不上`);
+    assert.ok(sample.note && sample.note.includes('示例'), `${entry.id} 示例报告必须标注自己是示例`);
+    assert.ok(sample.results.length === entry.dimensionCount, `${entry.id} 示例报告的结果条数对不上`);
+    assert.ok(sample.final && sample.final.type, `${entry.id} 示例报告缺最终读数`);
+    assert.ok(Array.isArray(sample.final.biography.paragraphs) && sample.final.biography.paragraphs.length > 0,
+      `${entry.id} 示例报告缺人物小传`);
+
+    // 引证表里的引文必须来自已校验的证据
+    // （pipeline 阶段已经保证这些引文能在作答原文中逐字命中；
+    //   引证表允许是已校验引文的连续子串，所以用同一套判定规则来验；
+    //   正向证据与反向证据都算已校验引文）
+    const validatedQuotes = [];
+    for (const result of sample.results) {
+      for (const evidence of [...(result.evidence || []), ...(result.counterEvidence || [])]) {
+        validatedQuotes.push(evidence.quote);
+      }
+    }
+    for (const row of sample.final.evidenceMap || []) {
+      assert.ok(quoteTraceable(row.quote, validatedQuotes),
+        `${entry.id} 引证表里的引文没有对应的已校验证据：${row.quote}`);
+    }
   }
 });
 

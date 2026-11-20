@@ -39,6 +39,7 @@ export function documentTitleFor(suite, stage = 'start') {
   const name = raw.replace(ILLEGAL_FILENAME_CHARS, ' ').replace(/\s+/g, ' ').trim();
   if (!name) return DEFAULT_TITLE;
   if (stage === 'final') return `${name} · 倾向画像`;
+  if (stage === 'sample') return `${name} · 倾向画像（示例）`;
   if (stage === 'start') return DEFAULT_TITLE;
   return `${name} · 作答中`;
 }
@@ -46,7 +47,12 @@ export function documentTitleFor(suite, stage = 'start') {
 /** 把上面的标题写进 document.title（浏览器环境才有 document）。 */
 function applyDocumentTitle(stage) {
   if (typeof document === 'undefined') return;
-  document.title = documentTitleFor(state.suite, stage);
+  // 示例报告的标题要用**示例所属**的套件名，不是当前选中的那个——
+  // 否则看别的套件的示例时，打印文件名会张冠李戴。
+  const suite = (stage === 'sample' && state.sample)
+    ? { name: state.sample.suiteName || state.sample.suite }
+    : state.suite;
+  document.title = documentTitleFor(suite, stage);
 }
 
 /* ---------- 运行模式 ---------- */
@@ -134,7 +140,7 @@ export function dimPoleLabels(key) {
 }
 
 export const state = {
-  stage: 'start',      // start | quiz | generating | final
+  stage: 'start',      // start | quiz | generating | final | sample
   dimIndex: 0,
   itemIndex: 0,
   mode: 'full',        // full（每维 6 题）| quick（每维 4 题，只取 core 层）
@@ -147,6 +153,7 @@ export const state = {
   pending: {},         // dimension -> true（后台计算中）
   errors: {},          // dimension -> 错误信息
   final: null,
+  sample: null,        // 预置的示例报告（public/samples/<id>.json），只读、不入草稿
   busy: false,
   error: null,
 };
@@ -247,6 +254,8 @@ export function loadDraft() {
  *  - 作答位置始终对齐到「第一个还没判型的维度」，避免刷新后跳错组。
  */
 export function normalizeState() {
+  // 'sample' 是示例报告页：它不入草稿，刷新后自然回到开始页，
+  // 所以这里把不在草稿里的阶段统一回退。
   const validStages = ['start', 'quiz', 'generating', 'final'];
 
   if (!validStages.includes(state.stage)) {
@@ -493,13 +502,20 @@ export function buildStartView({
         <h2 class="suite-panel__title">选一个测什么</h2>
         <div class="suite-panel__row">
           ${suiteIndex.map((entry) => `
-            <button type="button" class="suite-card${entry.id === selectedId ? ' suite-card--on' : ''}"
-                    data-suite="${esc(entry.id)}">
-              <span class="suite-card__title">${esc(entry.name)}</span>
-              <span class="suite-card__meta">${esc(suiteCardMeta(entry))}</span>
-              <span class="suite-card__note">${esc(entry.tagline || '')}</span>
-            </button>`).join('')}
+            <div class="suite-entry">
+              <button type="button" class="suite-card${entry.id === selectedId ? ' suite-card--on' : ''}"
+                      data-suite="${esc(entry.id)}">
+                <span class="suite-card__title">${esc(entry.name)}</span>
+                <span class="suite-card__meta">${esc(suiteCardMeta(entry))}</span>
+                <span class="suite-card__note">${esc(entry.tagline || '')}</span>
+              </button>
+              <button type="button" class="suite-sample-link" data-sample="${esc(entry.id)}">看一份示例报告 →</button>
+            </div>`).join('')}
         </div>
+        <p class="small suite-panel__hint">
+          没有 API Key 也能先看：示例报告是预置的真实产出（作答为虚构样本），
+          用来展示报告长什么样——每条判断怎么引用原话、证据不足时怎么写。
+        </p>
       </div>`
     : '';
 
@@ -507,6 +523,23 @@ export function buildStartView({
     ? `<div class="notice notice--calm">
         <b>${esc(itemSuite.name)}</b> — ${esc(itemSuite.intro || '')}
       </div>`
+    : '';
+
+  // 「这个测试在测什么」：维度清单直接取自套件文件里的 summary，
+  // 边界说明取自套件的 about 字段——不另写一份，避免两处说法漂移。
+  const suiteAbout = itemSuite
+    ? `<details class="suite-about">
+        <summary>这个测试在测什么？</summary>
+        ${itemSuite.about ? `<p class="small">${esc(itemSuite.about)}</p>` : ''}
+        <ul class="suite-about__dims">
+          ${itemSuite.dimensions.map((d) => `
+            <li>
+              <b>${esc(d.label)}</b>
+              <span class="small">${esc(d.key)}：${esc((d.poleLabels || []).join(' ↔ '))}</span>
+              ${d.summary ? `<p class="small">${esc(d.summary)}</p>` : ''}
+            </li>`).join('')}
+        </ul>
+      </details>`
     : '';
 
   const modePanel = modeSelectable
@@ -548,6 +581,8 @@ export function buildStartView({
     ${entryPanel}
 
     ${suiteIntro}
+
+    ${suiteAbout}
 
     <ul class="fact-list">
       <li><span class="k">题量</span><span>${isQuick ? '快速版' : '完整版'}共 ${total} 道开放情境题，分 ${dims} 组，每组 ${perDimension} 题，对应 ${esc(dimNames)} 几个维度。</span></li>
@@ -737,6 +772,7 @@ export function readoutOf(dim, poles = []) {
 
 export function buildFinalView({
   final, suite: suiteData = null, dimensionResults = [], error = null, errorBanner = '',
+  sampleMode = false,
 } = {}) {
   if (!final) {
     return `${errorBanner}<div class="notice">还没有生成最终画像。</div>`;
@@ -915,8 +951,10 @@ export function buildFinalView({
 
     <div class="btn-row">
       <button type="button" class="btn" id="print-btn">打印 / 存为 PDF</button>
-      <button type="button" class="btn btn--ghost" id="re-finalize-btn">重新合成报告</button>
-      <button type="button" class="btn btn--ghost" id="restart-btn-2">重新开始</button>
+      ${sampleMode
+        ? '<button type="button" class="btn btn--ghost" id="sample-back-btn">回到开始页</button>'
+        : '<button type="button" class="btn btn--ghost" id="re-finalize-btn">重新合成报告</button>'
+          + '<button type="button" class="btn btn--ghost" id="restart-btn-2">重新开始</button>'}
     </div>
     ${error ? `<div class="notice" style="margin-top:18px">${esc(error)}</div>` : ''}
   `;
@@ -1075,6 +1113,29 @@ async function selectSuite(id) {
   }
 }
 
+/**
+ * 载入预置的示例报告（public/samples/<id>.json）。
+ *
+ * 用途：访客没有 API Key 时也能先看到一份完整报告长什么样——
+ * 每条判断怎么引用原话、证据不足时怎么写、人物小传怎么讲。
+ * 示例报告是只读的，不进草稿，也不会被当成访客自己的结果。
+ */
+async function loadSample(suiteId) {
+  try {
+    const r = await fetch(`samples/${suiteId}.json`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const sample = await r.json();
+    if (!sample || !sample.final) throw new Error('示例报告内容不完整');
+    state.sample = sample;
+    state.stage = 'sample';
+    state.error = null;
+    render();
+  } catch (err) {
+    state.error = `示例报告载入失败：${err.message}`;
+    render();
+  }
+}
+
 /* ---------- 渲染与事件绑定 ---------- */
 
 function currentStatusStrip() {
@@ -1139,6 +1200,16 @@ function renderStart() {
       state.error = null;
       saveDraft();
       render();
+    });
+  });
+
+  dom.view.querySelectorAll('[data-sample]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const id = button.dataset.sample;
+      if (!id) return;
+      button.disabled = true;
+      button.textContent = '载入中…';
+      await loadSample(id);
     });
   });
 
@@ -1333,15 +1404,72 @@ function renderFinal() {
   bindRestart(dom.view.querySelector('#restart-btn-2'));
 }
 
+/**
+ * 示例报告页：复用报告页的渲染，但顶部挂一条醒目的说明，
+ * 并去掉「重新合成报告」（那会真的去调模型）和「重新开始」（会清掉访客草稿）。
+ */
+function renderSample() {
+  const sample = state.sample;
+  if (!sample || !sample.final) {
+    dom.view.innerHTML = '<div class="notice">示例报告载入失败，请回到开始页重试。</div>';
+    return;
+  }
+
+  // 示例报告自带维度元信息（key / 名称 / 两极），不依赖当前选中的套件——
+  // 否则看一眼别的套件的示例，就会把访客正在做的套件换掉。
+  const suiteMeta = sample.suiteMeta || {
+    id: sample.suite,
+    name: sample.suiteName || sample.suite,
+    dimensions: (state.suite && state.suite.id === sample.suite) ? state.suite.dimensions : [],
+  };
+
+  dom.view.innerHTML = `
+    <div class="sample-banner">
+      <b>这是一份预置的示例报告。</b>
+      里面的作答是虚构样本，用来说明报告长什么样——每条判断怎么引用原话、
+      证据不足时怎么写、人物小传怎么讲。它不是任何真实用户的测评结果。
+      <button type="button" class="btn btn--sm" id="sample-start-btn">用我自己的作答试一次 →</button>
+    </div>
+    ${buildFinalView({
+      final: sample.final,
+      suite: suiteMeta,
+      dimensionResults: sample.results || [],
+      error: null,
+      errorBanner: '',
+      sampleMode: true,
+    })}
+  `;
+
+  const back = () => {
+    state.stage = 'start';
+    state.sample = null;
+    state.error = null;
+    render();
+  };
+  dom.view.querySelector('#sample-back-btn')?.addEventListener('click', back);
+  dom.view.querySelector('#sample-start-btn')?.addEventListener('click', back);
+
+  dom.view.querySelector('#print-btn')?.addEventListener('click', () => {
+    applyDocumentTitle('sample');
+    window.print();
+  });
+}
+
 function renderProgress() {
   if (state.stage === 'start') {
     dom.progressLabel.textContent = state.results.length ? `已有 ${state.results.length} 个维度结果` : '';
     dom.restartBtn.hidden = true;
     return;
   }
+  if (state.stage === 'sample') {
+    // 示例报告是只读的：不给"重新开始"，免得访客误清掉自己的草稿。
+    dom.progressLabel.textContent = '示例报告';
+    dom.restartBtn.hidden = true;
+    return;
+  }
   dom.restartBtn.hidden = false;
   if (state.stage === 'quiz') {
-    dom.progressLabel.textContent = `维度 ${state.dimIndex + 1} / 4 · 第 ${state.itemIndex + 1} 题`;
+    dom.progressLabel.textContent = `维度 ${state.dimIndex + 1} / ${dimKeys().length} · 第 ${state.itemIndex + 1} 题`;
   } else if (state.stage === 'generating') {
     dom.progressLabel.textContent = '正在生成画像';
   } else {
@@ -1371,6 +1499,7 @@ export function render() {
   else if (state.stage === 'quiz') renderQuiz();
   else if (state.stage === 'generating') renderGenerating();
   else if (state.stage === 'final') renderFinal();
+  else if (state.stage === 'sample') renderSample();
 }
 
 async function boot() {

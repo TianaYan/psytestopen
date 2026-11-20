@@ -266,6 +266,116 @@ p { margin: 0 0 16px; }
   color: var(--muted);
 }
 
+/* 每个入口 = 一张卡片 + 一个「看示例报告」链接（button 不能嵌套 button） */
+.suite-entry {
+  flex: 1 1 240px;
+  min-width: 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.suite-entry .suite-card {
+  flex: none;
+  width: 100%;
+}
+
+.suite-sample-link {
+  align-self: flex-start;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--rule);
+  padding: 0 0 2px;
+  cursor: pointer;
+}
+
+.suite-sample-link:hover:not(:disabled) {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.suite-sample-link:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.suite-panel__hint {
+  margin: 14px 0 0;
+}
+
+/*
+ * 示例报告顶部的说明条。
+ * 刻意不用 .notice：打印样式会把 .notice 隐藏掉，
+ * 而这份说明必须在打印出来的 PDF 上留着——否则示例报告会被误当成真实结果。
+ */
+.sample-banner {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  padding: 14px 18px;
+  margin-bottom: 24px;
+}
+
+.sample-banner b {
+  font-family: var(--serif);
+}
+
+.sample-banner .btn {
+  margin-top: 10px;
+}
+
+/* 「这个测试在测什么」折叠块 */
+.suite-about {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--ink);
+  background: var(--paper-deep);
+  padding: 14px 18px;
+  margin: 0 0 22px;
+}
+
+.suite-about summary {
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.suite-about summary:hover {
+  color: var(--accent);
+}
+
+.suite-about > p {
+  margin: 14px 0 0;
+}
+
+.suite-about__dims {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.suite-about__dims li {
+  border-top: 1px solid var(--rule);
+  padding-top: 12px;
+}
+
+.suite-about__dims li > b {
+  font-family: var(--serif);
+  margin-right: 8px;
+}
+
+.suite-about__dims li > p {
+  margin: 4px 0 0;
+}
+
 /* ---------- 版本选择（完整版 / 快速版） ---------- */
 
 .mode-panel {
@@ -759,4 +869,6 @@ textarea:focus {
   .view { max-width: none; padding: 0; }
   .sheet { border: none; background: none; padding: 0; }
   .type-letter { border-color: #000; }
+  /* 示例报告的说明条要留着（否则 PDF 会被误当成真实结果），但按钮不留 */
+  .sample-banner .btn { display: none !important; }
 }
